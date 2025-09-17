@@ -14,6 +14,7 @@ npm install
 
 - `npm run dev`: ejecuta el servidor de desarrollo de Vite.
 - `npm run build`: genera la build de producción del frontend.
+- `npm run generate:icons`: regenera los iconos multiplataforma a partir de `src-tauri/icon.svg`.
 - `npm run tauri:dev`: levanta la aplicación de Tauri en modo desarrollo.
 - `npm run tauri:build`: empaqueta la aplicación para distribución.
 
@@ -38,8 +39,15 @@ soundcloud-wrapper-tauri/
 
 ## Iconos de la aplicación
 
-Los binarios de iconos generados por el scaffold de Tauri no se incluyen en el repositorio para evitar archivos binarios en los PRs.
-Antes de empaquetar ejecuta `npm exec tauri icon` (o `pnpm tauri icon`/`yarn tauri icon`) con tu arte final y se regenerará la carpeta `src-tauri/icons/` de manera local.
+El repositorio incluye un icono base vectorial en `src-tauri/icon.svg`. Durante el empaquetado los scripts ejecutan automáticamente `npm run generate:icons` para producir los artefactos específicos de cada plataforma dentro de `src-tauri/icons/` (ignorados en Git para evitar binarios). Si necesitas un diseño distinto, sustituye el SVG y vuelve a generar los iconos.
+
+## Distribución y firma
+
+- `./scripts/build-macos.sh`: empaqueta un `.dmg` en macOS propagando `APPLE_IDENTITY`/`APPLE_TEAM_ID` si están definidos.
+- `./scripts/build-windows.ps1`: crea y firma (opcional) el `.msi` usando `signtool` cuando hay certificado.
+- `./scripts/build-linux.sh`: genera AppImage/Deb/RPM y firma con GPG si `LINUX_SIGNING_KEY_ID` está configurado.
+
+Consulta `docs/release-signing.md` para los pasos detallados de codesign y notarización en cada plataforma.
 
 ## IDE recomendado
 

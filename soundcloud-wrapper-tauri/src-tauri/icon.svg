@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">SoundCloud Desktop Icon</title>
+  <defs>
+    <linearGradient id="bg" x1="0%" x2="100%" y1="0%" y2="100%">
+      <stop offset="0%" stop-color="#ff6f3c" />
+      <stop offset="100%" stop-color="#ffb347" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="108" fill="url(#bg)" />
+  <g fill="#ffffff" transform="translate(96 128)">
+    <path d="M56 256c-18.778 0-34-15.222-34-34V90c0-18.778 15.222-34 34-34s34 15.222 34 34v132c0 18.778-15.222 34-34 34z" opacity="0.75" />
+    <path d="M128 224c-18.778 0-34-15.222-34-34V58c0-18.778 15.222-34 34-34s34 15.222 34 34v132c0 18.778-15.222 34-34 34z" opacity="0.85" />
+    <path d="M200 288c-18.778 0-34-15.222-34-34V26c0-18.778 15.222-34 34-34s34 15.222 34 34v228c0 18.778-15.222 34-34 34z" />
+    <path d="M272 240c-18.778 0-34-15.222-34-34V74c0-18.778 15.222-34 34-34s34 15.222 34 34v132c0 18.778-15.222 34-34 34z" opacity="0.85" />
+    <path d="M344 208c-18.778 0-34-15.222-34-34v-66c0-18.778 15.222-34 34-34s34 15.222 34 34v66c0 18.778-15.222 34-34 34z" opacity="0.75" />
+  </g>
+</svg>

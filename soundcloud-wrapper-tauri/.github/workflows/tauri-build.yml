@@ -1,0 +1,97 @@
+name: Build desktop bundles
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            script: ./scripts/build-macos.sh
+            shell: bash
+          - os: windows-latest
+            script: .\\scripts\\build-windows.ps1
+            shell: pwsh
+          - os: ubuntu-latest
+            script: ./scripts/build-linux.sh
+            shell: bash
+    defaults:
+      run:
+        working-directory: soundcloud-wrapper-tauri
+    env:
+      CARGO_TERM_COLOR: always
+      APPLE_IDENTITY: ${{ secrets.APPLE_IDENTITY }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+      TIMESTAMP_URL: ${{ secrets.TIMESTAMP_URL }}
+      LINUX_SIGNING_KEY: ${{ secrets.LINUX_SIGNING_KEY }}
+      LINUX_SIGNING_KEY_ID: ${{ secrets.LINUX_SIGNING_KEY_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: soundcloud-wrapper-tauri/package-lock.json
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo directories
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            soundcloud-wrapper-tauri/src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('soundcloud-wrapper-tauri/src-tauri/Cargo.lock') }}
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version ^2 --locked --force
+
+      - name: Decode Windows certificate
+        if: runner.os == 'Windows' && env.WINDOWS_CERTIFICATE_BASE64 != ''
+        shell: pwsh
+        run: |
+          $bytes = [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_BASE64)
+          [IO.File]::WriteAllBytes('windows-cert.pfx', $bytes)
+          "SIGNING_CERTIFICATE_PATH=$(Resolve-Path windows-cert.pfx)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "SIGNING_CERTIFICATE_PASSWORD=$env:WINDOWS_CERTIFICATE_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Import Linux signing key
+        if: runner.os == 'Linux' && env.LINUX_SIGNING_KEY != ''
+        run: |
+          echo "$LINUX_SIGNING_KEY" | gpg --batch --import
+
+      - name: Build bundles
+        run: ${{ matrix.script }}
+        shell: ${{ matrix.shell }}
+
+      - name: Archive artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}-bundles
+          path: |
+            soundcloud-wrapper-tauri/src-tauri/target/release/bundle/**
+          if-no-files-found: error
