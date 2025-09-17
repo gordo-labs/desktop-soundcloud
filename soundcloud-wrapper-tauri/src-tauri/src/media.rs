@@ -174,10 +174,13 @@ impl MediaIntegration {
 mod linux {
     use super::*;
     use crate::{
-        emit_media_event, MEDIA_NEXT_EVENT, MEDIA_PAUSE_EVENT, MEDIA_PLAY_EVENT, MEDIA_PREVIOUS_EVENT, MEDIA_TOGGLE_EVENT,
+        emit_media_event, MEDIA_NEXT_EVENT, MEDIA_PAUSE_EVENT, MEDIA_PLAY_EVENT,
+        MEDIA_PREVIOUS_EVENT, MEDIA_TOGGLE_EVENT,
     };
     use glib::{source::Priority, Continue, MainContext, MainLoop};
-    use mpris_player::{LoopStatus, Metadata as MprisMetadata, MprisPlayer, PlaybackStatus as MprisPlaybackStatus};
+    use mpris_player::{
+        LoopStatus, Metadata as MprisMetadata, MprisPlayer, PlaybackStatus as MprisPlaybackStatus,
+    };
     use std::sync::mpsc;
 
     #[derive(Debug, Clone)]
@@ -208,7 +211,10 @@ mod linux {
             let _ = self.sender.send(Command::Update(update.clone()));
         }
 
-        fn run(app: AppHandle, ready_tx: mpsc::Sender<glib::Sender<Command>>) -> Result<(), String> {
+        fn run(
+            app: AppHandle,
+            ready_tx: mpsc::Sender<glib::Sender<Command>>,
+        ) -> Result<(), String> {
             let context = MainContext::new();
             let _guard = context
                 .acquire()
@@ -315,7 +321,10 @@ mod linux {
 #[cfg(target_os = "windows")]
 mod windows {
     use super::*;
-    use crate::{emit_media_event, MEDIA_NEXT_EVENT, MEDIA_PAUSE_EVENT, MEDIA_PLAY_EVENT, MEDIA_PREVIOUS_EVENT};
+    use crate::{
+        emit_media_event, MEDIA_NEXT_EVENT, MEDIA_PAUSE_EVENT, MEDIA_PLAY_EVENT,
+        MEDIA_PREVIOUS_EVENT,
+    };
     use tauri::Manager;
     use windows::core::{factory, HSTRING};
     use windows::Foundation::{TypedEventHandler, Uri};
@@ -341,14 +350,13 @@ mod windows {
             let window = app.get_window("main")?;
             let hwnd = window.hwnd().ok()?;
 
-            let interop: ISystemMediaTransportControlsInterop = factory::<
-                SystemMediaTransportControls,
-                ISystemMediaTransportControlsInterop,
-            >()
-            .ok()?;
+            let interop: ISystemMediaTransportControlsInterop =
+                factory::<SystemMediaTransportControls, ISystemMediaTransportControlsInterop>()
+                    .ok()?;
 
-            let smtc: SystemMediaTransportControls = unsafe { interop.GetForWindow::<SystemMediaTransportControls>(HWND(hwnd.0)) }
-                .ok()?;
+            let smtc: SystemMediaTransportControls =
+                unsafe { interop.GetForWindow::<SystemMediaTransportControls>(HWND(hwnd.0)) }
+                    .ok()?;
 
             let play_handle = app.clone();
             let handler = TypedEventHandler::new(move |_, args: Option<_>| {
@@ -501,7 +509,10 @@ mod macos {
                     }
                     if let Some(artwork) = &metadata.artwork_url {
                         let value = NSString::from_str(artwork);
-                        entries.push((ns_string!("MPNowPlayingInfoPropertyAssetURL"), value.as_ref()));
+                        entries.push((
+                            ns_string!("MPNowPlayingInfoPropertyAssetURL"),
+                            value.as_ref(),
+                        ));
                     }
                 }
 
@@ -510,7 +521,10 @@ mod macos {
                     _ => 0.0,
                 };
                 let rate_number = NSNumber::new_f64(rate);
-                entries.push((ns_string!("MPNowPlayingInfoPropertyPlaybackRate"), rate_number.as_ref()));
+                entries.push((
+                    ns_string!("MPNowPlayingInfoPropertyPlaybackRate"),
+                    rate_number.as_ref(),
+                ));
 
                 let (keys, values): (Vec<_>, Vec<_>) = entries.into_iter().unzip();
                 let dict = NSDictionary::from_slices(&keys, &values);

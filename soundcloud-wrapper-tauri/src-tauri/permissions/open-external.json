@@ -1,0 +1,15 @@
+{
+  "default": null,
+  "permission": [
+    {
+      "identifier": "open-external",
+      "description": "Open external URLs validated by the backend",
+      "commands": {
+        "allow": [
+          "open_external"
+        ],
+        "deny": []
+      }
+    }
+  ]
+}

@@ -7,6 +7,7 @@ use std::sync::Mutex;
 use media::{MediaCache, MediaIntegration, MediaUpdate, MediaUpdatePayload, ThemeChangePayload};
 use serde_json::{self, Value};
 use tauri::menu::MenuBuilder;
+use tauri::plugin::Builder as PluginBuilder;
 use tauri::tray::{MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, WindowEvent};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
@@ -56,8 +57,20 @@ struct TrayState(TrayIcon);
 #[tauri::command]
 fn open_external(app: AppHandle, url: String) -> Result<(), String> {
     let parsed = url::Url::parse(&url).map_err(|error| format!("invalid URL: {error}"))?;
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("URLs with embedded credentials are not allowed".into());
+    }
     match parsed.scheme() {
-        "http" | "https" => {
+        "http" => {
+            if parsed.host_str() != Some("localhost") {
+                return Err("http scheme is only allowed for the local development server".into());
+            }
+            let target = parsed.into_string();
+            app.shell()
+                .open(target, None)
+                .map_err(|error| format!("failed to open URL externally: {error}"))
+        }
+        "https" => {
             let target = parsed.into_string();
             app.shell()
                 .open(target, None)
@@ -119,6 +132,22 @@ pub(crate) fn emit_media_event(app: &AppHandle, event: &str) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(
+            PluginBuilder::new("navigation-guard")
+                .on_navigation(|_, url| {
+                    let allowed = match url.scheme() {
+                        "tauri" | "https" => true,
+                        "http" => url.host_str() == Some("localhost"),
+                        "about" => url.as_str() == "about:blank",
+                        _ => false,
+                    };
+                    if !allowed {
+                        eprintln!("blocked navigation to disallowed URL: {url}");
+                    }
+                    allowed
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
@@ -128,8 +157,8 @@ pub fn run() {
                 .map_err(|error| -> Box<dyn Error> { Box::new(error) })?;
             app.manage(AppState::new(&app.handle()));
             app.manage(WindowState::default());
-            let tray = setup_tray(&app.handle())
-                .map_err(|error| -> Box<dyn Error> { Box::new(error) })?;
+            let tray =
+                setup_tray(&app.handle()).map_err(|error| -> Box<dyn Error> { Box::new(error) })?;
             app.manage(TrayState(tray));
 
             let handle = app.handle();
@@ -259,7 +288,9 @@ fn show_main_window(app: &AppHandle) {
             eprintln!("failed to focus window: {error}");
         }
     }
-    app.state::<WindowState>().hidden.store(false, Ordering::SeqCst);
+    app.state::<WindowState>()
+        .hidden
+        .store(false, Ordering::SeqCst);
 }
 
 fn hide_main_window(app: &AppHandle) {
@@ -268,7 +299,9 @@ fn hide_main_window(app: &AppHandle) {
             eprintln!("failed to hide window: {error}");
         }
     }
-    app.state::<WindowState>().hidden.store(true, Ordering::SeqCst);
+    app.state::<WindowState>()
+        .hidden
+        .store(true, Ordering::SeqCst);
 }
 
 fn go_home(app: &AppHandle) {
@@ -276,7 +309,9 @@ fn go_home(app: &AppHandle) {
     if let Some(window) = app.get_window(MAIN_WINDOW_LABEL) {
         if let Err(error) = window.emit(TRAY_HOME_EVENT, Value::Null) {
             eprintln!("failed to emit home event: {error}");
-            if let Err(eval_error) = window.eval("window.location.href = 'https://soundcloud.com/';") {
+            if let Err(eval_error) =
+                window.eval("window.location.href = 'https://soundcloud.com/';")
+            {
                 eprintln!("failed to navigate home: {eval_error}");
             }
         }
