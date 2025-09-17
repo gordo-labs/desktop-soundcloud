@@ -1,7 +1,16 @@
-use std::error::Error;
+mod media;
 
-use tauri::{AppHandle, Manager};
+use std::error::Error;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+
+use media::{MediaCache, MediaIntegration, MediaUpdate, MediaUpdatePayload, ThemeChangePayload};
+use serde_json::{self, Value};
+use tauri::menu::MenuBuilder;
+use tauri::tray::{MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Manager, WindowEvent};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_shell::ShellExt;
 
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -10,6 +19,39 @@ const MEDIA_PLAY_EVENT: &str = "media://play";
 const MEDIA_PAUSE_EVENT: &str = "media://pause";
 const MEDIA_NEXT_EVENT: &str = "media://next";
 const MEDIA_PREVIOUS_EVENT: &str = "media://previous";
+const MEDIA_STATE_EVENT: &str = "app://media/state";
+const THEME_CHANGE_EVENT: &str = "app://theme/change";
+const TRAY_HOME_EVENT: &str = "app://tray/home";
+const TRAY_MENU_TOGGLE: &str = "tray://toggle";
+const TRAY_MENU_HOME: &str = "tray://home";
+const TRAY_MENU_EXIT: &str = "tray://exit";
+
+struct AppState {
+    media: Mutex<MediaManager>,
+}
+
+struct MediaManager {
+    integration: MediaIntegration,
+    cache: MediaCache,
+}
+
+impl AppState {
+    fn new(app: &AppHandle) -> Self {
+        Self {
+            media: Mutex::new(MediaManager {
+                integration: MediaIntegration::initialize(app),
+                cache: MediaCache::default(),
+            }),
+        }
+    }
+}
+
+#[derive(Default)]
+struct WindowState {
+    hidden: AtomicBool,
+}
+
+struct TrayState(TrayIcon);
 
 #[tauri::command]
 fn open_external(app: AppHandle, url: String) -> Result<(), String> {
@@ -70,7 +112,7 @@ fn register_media_shortcuts(app: &AppHandle) -> Result<(), tauri_plugin_global_s
     Ok(())
 }
 
-fn emit_media_event(app: &AppHandle, event: &str) {
+pub(crate) fn emit_media_event(app: &AppHandle, event: &str) {
     let _ = app.emit_to(MAIN_WINDOW_LABEL, event, ());
 }
 
@@ -79,10 +121,35 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![open_external])
         .setup(|app| {
             register_media_shortcuts(&app.handle())
                 .map_err(|error| -> Box<dyn Error> { Box::new(error) })?;
+            app.manage(AppState::new(&app.handle()));
+            app.manage(WindowState::default());
+            let tray = setup_tray(&app.handle())
+                .map_err(|error| -> Box<dyn Error> { Box::new(error) })?;
+            app.manage(TrayState(tray));
+
+            let handle = app.handle();
+
+            let media_handle = handle.clone();
+            handle.listen_any(MEDIA_STATE_EVENT, move |event| {
+                if let Ok(payload) = serde_json::from_str::<MediaUpdatePayload>(event.payload()) {
+                    if let Some(update) = MediaUpdate::from_payload(payload) {
+                        handle_media_update(&media_handle, update);
+                    }
+                }
+            });
+
+            let theme_handle = handle.clone();
+            handle.listen_any(THEME_CHANGE_EVENT, move |event| {
+                if let Ok(payload) = serde_json::from_str::<ThemeChangePayload>(event.payload()) {
+                    handle_theme_change(&theme_handle, payload);
+                }
+            });
+
             Ok(())
         })
         .on_page_load(|window, _payload| {
@@ -90,6 +157,128 @@ pub fn run() {
                 eprintln!("failed to inject media bridge script: {error}");
             }
         })
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                hide_main_window(&window.app_handle());
+                api.prevent_close();
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn setup_tray(app: &AppHandle) -> tauri::Result<TrayIcon> {
+    let menu = MenuBuilder::new(app)
+        .text(TRAY_MENU_TOGGLE, "Mostrar/Ocultar ventana")?
+        .text(TRAY_MENU_HOME, "Ir a Inicio")?
+        .separator()
+        .text(TRAY_MENU_EXIT, "Salir")?
+        .build()?;
+
+    let mut tray_builder = TrayIconBuilder::new()
+        .menu(&menu)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            TRAY_MENU_TOGGLE => toggle_main_window(app),
+            TRAY_MENU_HOME => go_home(app),
+            TRAY_MENU_EXIT => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| match event {
+            TrayIconEvent::Click { button, .. } if button == MouseButton::Left => {
+                toggle_main_window(tray.app_handle());
+            }
+            _ => {}
+        });
+
+    if let Some(icon) = app.default_window_icon().cloned() {
+        tray_builder = tray_builder.icon(icon);
+    }
+
+    tray_builder = tray_builder.tooltip("SoundCloud Wrapper");
+    tray_builder.build(app)
+}
+
+fn handle_media_update(app: &AppHandle, update: MediaUpdate) {
+    if let Ok(mut manager) = app.state::<AppState>().media.lock() {
+        manager.integration.update(&update);
+        manager.cache.update(&update);
+    }
+}
+
+fn handle_theme_change(app: &AppHandle, payload: ThemeChangePayload) {
+    let theme_label = payload.theme.unwrap_or_else(|| "desconocido".into());
+    let metadata = payload
+        .metadata
+        .map(|metadata| metadata.into_metadata())
+        .or_else(|| {
+            app.state::<AppState>()
+                .media
+                .lock()
+                .ok()
+                .and_then(|manager| manager.cache.metadata.clone())
+        });
+
+    let mut body = format!("Tema cambiado a {theme_label}.");
+    if let Some(meta) = metadata {
+        if let Some(title) = meta.title {
+            let track_line = if let Some(artist) = meta.artist {
+                format!("\nReproduciendo: {title} — {artist}")
+            } else {
+                format!("\nReproduciendo: {title}")
+            };
+            body.push_str(&track_line);
+        }
+    }
+
+    if let Err(error) = app
+        .notification()
+        .builder()
+        .title("Tema actualizado")
+        .body(body)
+        .show()
+    {
+        eprintln!("failed to show theme change notification: {error}");
+    }
+}
+
+fn toggle_main_window(app: &AppHandle) {
+    let hidden = app.state::<WindowState>().hidden.load(Ordering::SeqCst);
+    if hidden {
+        show_main_window(app);
+    } else {
+        hide_main_window(app);
+    }
+}
+
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_window(MAIN_WINDOW_LABEL) {
+        if let Err(error) = window.show() {
+            eprintln!("failed to show window: {error}");
+        }
+        if let Err(error) = window.set_focus() {
+            eprintln!("failed to focus window: {error}");
+        }
+    }
+    app.state::<WindowState>().hidden.store(false, Ordering::SeqCst);
+}
+
+fn hide_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_window(MAIN_WINDOW_LABEL) {
+        if let Err(error) = window.hide() {
+            eprintln!("failed to hide window: {error}");
+        }
+    }
+    app.state::<WindowState>().hidden.store(true, Ordering::SeqCst);
+}
+
+fn go_home(app: &AppHandle) {
+    show_main_window(app);
+    if let Some(window) = app.get_window(MAIN_WINDOW_LABEL) {
+        if let Err(error) = window.emit(TRAY_HOME_EVENT, Value::Null) {
+            eprintln!("failed to emit home event: {error}");
+            if let Err(eval_error) = window.eval("window.location.href = 'https://soundcloud.com/';") {
+                eprintln!("failed to navigate home: {eval_error}");
+            }
+        }
+    }
 }
