@@ -15,7 +15,111 @@
   }
 
   const { invoke } = tauri.core;
-  const { listen } = tauri.event;
+  const { emit, listen } = tauri.event;
+
+  const MEDIA_STATE_EVENT = "app://media/state";
+  const THEME_CHANGE_EVENT = "app://theme/change";
+  const TRAY_HOME_EVENT = "app://tray/home";
+
+  let lastMediaSnapshot = null;
+
+  const readMediaSession = () => {
+    const session = navigator.mediaSession;
+    if (!session) {
+      return null;
+    }
+
+    const metadata = session.metadata;
+    let normalizedArtwork;
+    if (metadata && Array.isArray(metadata.artwork)) {
+      normalizedArtwork = metadata.artwork
+        .map((entry) => {
+          if (!entry) {
+            return null;
+          }
+          const src = entry.src || entry.url;
+          return src ? { src } : null;
+        })
+        .filter(Boolean);
+    }
+
+    return {
+      playbackState: session.playbackState || null,
+      metadata: metadata
+        ? {
+            title: metadata.title ?? null,
+            artist: metadata.artist ?? null,
+            album: metadata.album ?? null,
+            artwork: normalizedArtwork && normalizedArtwork.length > 0 ? normalizedArtwork : undefined,
+          }
+        : null,
+    };
+  };
+
+  const maybeEmitMediaState = () => {
+    if (!emit) {
+      return;
+    }
+
+    const snapshot = readMediaSession();
+    const payload = snapshot ?? { playbackState: null, metadata: null };
+    const serialized = JSON.stringify(payload);
+    if (serialized === lastMediaSnapshot) {
+      return;
+    }
+    lastMediaSnapshot = serialized;
+    emit(MEDIA_STATE_EVENT, payload).catch((error) => {
+      console.error("[SoundCloud Wrapper] Failed to emit media state", error);
+    });
+  };
+
+  const detectTheme = () => {
+    const root = document.documentElement;
+    if (!root) {
+      return null;
+    }
+
+    const datasetTheme = root.getAttribute("data-theme") || root.dataset?.theme;
+    if (datasetTheme) {
+      return datasetTheme;
+    }
+
+    const findTheme = (element) => {
+      if (!element || !element.classList) {
+        return null;
+      }
+      const classes = Array.from(element.classList);
+      return classes.find((item) => /dark|light/i.test(item)) || null;
+    };
+
+    const detected = findTheme(root) || findTheme(document.body);
+    if (detected) {
+      return detected;
+    }
+
+    const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)")?.matches;
+    return prefersDark ? "dark" : null;
+  };
+
+  let lastTheme = null;
+  const emitThemeChange = () => {
+    if (!emit) {
+      return;
+    }
+
+    const currentTheme = detectTheme();
+    if (currentTheme === lastTheme) {
+      return;
+    }
+    lastTheme = currentTheme;
+    const snapshot = readMediaSession();
+    emit(THEME_CHANGE_EVENT, {
+      theme: currentTheme,
+      metadata: snapshot?.metadata ?? null,
+    }).catch((error) => {
+      console.error("[SoundCloud Wrapper] Failed to emit theme change", error);
+    });
+  };
 
   const normalizeToHttpUrl = (value) => {
     if (value == null) {
@@ -157,26 +261,31 @@
     if (!clickFirstMatch(SELECTORS.toggle)) {
       clickFirstMatch(SELECTORS.play);
     }
+    queueMicrotask(maybeEmitMediaState);
   };
 
   const activatePlay = () => {
     if (!clickFirstMatch(SELECTORS.play)) {
       activateToggle();
     }
+    queueMicrotask(maybeEmitMediaState);
   };
 
   const activatePause = () => {
     if (!clickFirstMatch(SELECTORS.pause)) {
       activateToggle();
     }
+    queueMicrotask(maybeEmitMediaState);
   };
 
   const activateNext = () => {
     clickFirstMatch(SELECTORS.next);
+    queueMicrotask(maybeEmitMediaState);
   };
 
   const activatePrevious = () => {
     clickFirstMatch(SELECTORS.previous);
+    queueMicrotask(maybeEmitMediaState);
   };
 
   const IPC_EVENTS = [
@@ -215,4 +324,40 @@
       }
     }
   }
+
+  maybeEmitMediaState();
+  if (typeof window !== "undefined") {
+    window.setInterval(maybeEmitMediaState, 2000);
+    window.addEventListener("focus", maybeEmitMediaState, true);
+  }
+  document.addEventListener("visibilitychange", maybeEmitMediaState, true);
+  document.addEventListener("readystatechange", maybeEmitMediaState, true);
+
+  emitThemeChange();
+  const themeObserver = new MutationObserver(emitThemeChange);
+  themeObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["class", "data-theme"],
+  });
+  if (document.body) {
+    themeObserver.observe(document.body, {
+      attributes: true,
+      attributeFilter: ["class", "data-theme"],
+    });
+  }
+  const colorSchemeMedia = window.matchMedia?.("(prefers-color-scheme: dark)");
+  if (colorSchemeMedia && typeof colorSchemeMedia.addEventListener === "function") {
+    colorSchemeMedia.addEventListener("change", emitThemeChange);
+  }
+  document.addEventListener("DOMContentLoaded", emitThemeChange, { once: true });
+
+  listen(TRAY_HOME_EVENT, () => {
+    try {
+      window.location.assign("https://soundcloud.com/");
+    } catch (_error) {
+      window.location.href = "https://soundcloud.com/";
+    }
+  }).catch((error) => {
+    console.error("[SoundCloud Wrapper] Failed to listen for tray navigation", error);
+  });
 })();
