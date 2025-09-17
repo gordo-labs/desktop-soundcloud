@@ -1,5 +1,5 @@
-Agrega integración por OS:
-- Linux: usar MPRIS. Si hay crate o plugin Tauri disponible, intégralo; si no, expón un pequeño servicio Rust con mpris-player y sincroniza estado play/pause/track usando IPC.
-- Windows: expón SMTC usando Windows crate (windows-rs) para SystemMediaTransportControls; mapea eventos a los handlers existentes.
-- macOS: usa Now Playing / MPNowPlayingInfoCenter si es factible; sincroniza metadata desde MediaSession del WebView.
-Entrega: código por plataforma con #[cfg(target_os = ...)] y notas si alguna parte queda como guía.
+Add OS-specific integration:
+- Linux: use MPRIS. If a Tauri crate or plugin exists, integrate it; otherwise, expose a small Rust service with `mpris-player` and sync play/pause/track state via IPC.
+- Windows: expose SMTC using the Windows crate (`windows-rs`) for `SystemMediaTransportControls`; map events to the existing handlers.
+- macOS: use Now Playing / `MPNowPlayingInfoCenter` if feasible; sync metadata from the WebView `MediaSession`.
+Deliver: per-platform code with `#[cfg(target_os = ...)]` and notes if any part remains as guidance.
