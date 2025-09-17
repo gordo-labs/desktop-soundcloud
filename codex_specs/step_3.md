@@ -1,0 +1,1 @@
+Intercepta intents de abrir nuevas ventanas/enlaces externos desde la web de SoundCloud y redirígelos a shell.openExternal en el sistema. Implementa el handler correspondiente en Rust y el puente en el frontend. Incluye el código.
