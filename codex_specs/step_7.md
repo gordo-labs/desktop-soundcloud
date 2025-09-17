@@ -1,7 +1,7 @@
-Endurece el proyecto:
-- Refuerza CSP (sin 'unsafe-inline' ni 'unsafe-eval' si es posible; usa nonces/hashes solo si absolutamente necesario por SoundCloud).
-- Bloquea protocolos no requeridos (file://).
-- Revisa allowlist de APIs Tauri y limita shell.open a https/http con validación.
-- Desactiva drag&drop de archivos si no se usa.
-- Documenta un checklist de seguridad final.
-Devuelve el JSON final y cambios de código.
+Harden the project:
+- Strengthen the CSP (avoid `unsafe-inline` and `unsafe-eval` if possible; use nonces/hashes only if absolutely required by SoundCloud).
+- Block unnecessary protocols (`file://`).
+- Review the Tauri API allowlist and restrict `shell.open` to https/http with validation.
+- Disable drag & drop of files if unused.
+- Document a final security checklist.
+Return the final JSON and code changes.

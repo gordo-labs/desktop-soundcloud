@@ -1,44 +1,44 @@
-# Objetivo
-Crear una app de escritorio **ligera y 100% independiente de Chrome** que cargue SoundCloud dentro de un **WebView del sistema** usando **Tauri**. Incluir atajos globales, controles multimedia del sistema, bandeja, manejo de enlaces externos, persistencia de sesión y empaquetado para macOS/Windows/Linux. Mantener reproducción **dentro del WebView** para respetar ToS.
+# Goal
+Create a **lightweight desktop app that is 100% independent from Chrome** and loads SoundCloud inside the **system WebView** using **Tauri**. Include global shortcuts, system media controls, tray icon, external link handling, session persistence, and packaging for macOS/Windows/Linux. Keep playback **inside the WebView** to respect the Terms of Service.
 
 ---
 
-# Alcance
-- **Sí**: Wrapper WebView, media keys (play/pause/next/prev), bandeja, notificaciones, deep links básicos, MPRIS (Linux), SMTC (Windows), persistencia, instaladores.
-- **No**: Descargas/offline, scraping de streams fuera del WebView, bypass de ToS, Widevine.
+# Scope
+- **In scope:** WebView wrapper, media keys (play/pause/next/prev), tray, notifications, basic deep links, MPRIS (Linux), SMTC (Windows), persistence, installers.
+- **Out of scope:** Downloads/offline mode, scraping streams outside the WebView, TOS bypass, Widevine.
 
 ---
 
-# Arquitectura
-- **Tauri (Rust)**: backend, atajos globales, IPC con frontend.
-- **Frontend mínimo**: una vista que embebe `https://soundcloud.com` y JS inyectado para `MediaSession` + selectores de fallback.
-- **Integración SO**: media keys, tray, notificaciones. 
-- **Seguridad**: CSP, `tauri.conf.json` con allowlist mínimo.
+# Architecture
+- **Tauri (Rust):** backend, global shortcuts, IPC with the frontend.
+- **Minimal frontend:** a view that embeds `https://soundcloud.com` and injected JS for `MediaSession` + fallback selectors.
+- **OS integration:** media keys, tray, notifications.
+- **Security:** CSP, `tauri.conf.json` with a minimal allowlist.
 
 ---
 
-# Convenciones
-- Nombre del binario/app: `SoundCloud Wrapper` (ajustable).
-- Paquete id: `com.example.soundcloudwrapper` (sustituir dominio).
-- Carpeta proyecto: `soundcloud-wrapper-tauri/`.
+# Conventions
+- Binary/app name: `SoundCloud Wrapper` (adjustable).
+- Package ID: `com.example.soundcloudwrapper` (replace with your domain).
+- Project folder: `soundcloud-wrapper-tauri/`.
 
 ---
 
-# Prompts por Step (para copiar/pegar a Codex)
-Cada prompt es **autocontenido** y recuerda el contexto previo.
+# Step prompts (for copying/pasting into Codex)
+Each prompt is **self-contained** and recalls the previous context.
 
-## Step 0 — Crear proyecto base
-**Meta:** Proyecto Tauri limpio con plantilla Vue/React/Svelte o vanilla (elige **vanilla** para mínimo).
+## Step 0 — Create the base project
+**Goal:** Clean Tauri project with the Vue/React/Svelte or vanilla template (choose **vanilla** for a minimal setup).
 
-**Deliverables:** Árbol del proyecto, `tauri.conf.json` inicial, script de dev.
+**Deliverables:** Project tree, initial `tauri.conf.json`, dev script.
 
 **Prompt:**
 ```
-Actúa como un asistente de setup. Crea un proyecto mínimo de Tauri (Rust + frontend vanilla) llamado "soundcloud-wrapper-tauri".
-- Usa Node + Vite para el frontend (vanilla TS).
-- Inicializa Tauri con última versión estable.
-- Añade scripts npm: dev, build, tauri:dev, tauri:build.
-- Configura .gitignore adecuado para Node/Tauri.
-Entrega: comandos a ejecutar y estructura final de archivos.
+Act as a setup assistant. Create a minimal Tauri project (Rust + vanilla frontend) named "soundcloud-wrapper-tauri".
+- Use Node + Vite for the frontend (vanilla TS).
+- Initialise Tauri with the latest stable version.
+- Add npm scripts: dev, build, tauri:dev, tauri:build.
+- Configure a proper .gitignore for Node/Tauri.
+Output: commands to run and final file structure.
 ```
-...
+

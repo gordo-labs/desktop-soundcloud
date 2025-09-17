@@ -1,3 +1,3 @@
-En el frontend vanilla TS de Vite, crea una vista mínima que simplemente opere dentro de la webview de Tauri. Al iniciar, redirige a https://soundcloud.com/ y confirma que la sesión persiste entre reinicios (cookies + localStorage).
-- Añade lógica para que cualquier target="_blank" se abra con shell.openExternal.
-- Proporciona el código de index.html y main.ts necesarios.
+In the vanilla TS Vite frontend, create a minimal view that operates entirely inside the Tauri WebView. On start, redirect to https://soundcloud.com/ and ensure the session persists between restarts (cookies + localStorage).
+- Add logic so any `target="_blank"` opens via `shell.openExternal`.
+- Provide the required `index.html` and `main.ts` code.

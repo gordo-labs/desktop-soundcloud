@@ -1,5 +1,5 @@
-Añade:
-- Tray icon + menú: Mostrar/Ocultar ventana, Ir a Inicio, Salir.
-- Comportamiento "Minimize to tray" al cerrar (cerrar a bandeja en lugar de terminar).
-- Notificación nativa al cambiar de tema: si MediaSession expone metadata (title, artist, artwork), muéstrala.
-Incluye código Rust y frontend.
+Add:
+- Tray icon + menu: Show/Hide window, Go Home, Quit.
+- "Minimise to tray" behaviour on close (hide instead of terminating).
+- Native notification on track change: if `MediaSession` exposes metadata (title, artist, artwork), display it.
+Include Rust and frontend code.

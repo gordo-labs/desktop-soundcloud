@@ -1,8 +1,8 @@
 # SoundCloud Wrapper — Base Scaffold
 
-Este repositorio contiene el punto de partida mínimo para la aplicación de escritorio "SoundCloud Wrapper" construida con **Tauri 2** y un frontend **Vite + TypeScript** sin frameworks.
+This repository contains the minimal starting point for the "SoundCloud Wrapper" desktop application built with **Tauri 2** and a **Vite + TypeScript** frontend without additional frameworks.
 
-## Comandos ejecutados
+## Commands used to bootstrap
 
 ```bash
 npm create tauri-app@latest soundcloud-wrapper-tauri -- --template vanilla-ts
@@ -10,15 +10,15 @@ cd soundcloud-wrapper-tauri
 npm install
 ```
 
-## Scripts disponibles
+## Available scripts
 
-- `npm run dev`: ejecuta el servidor de desarrollo de Vite.
-- `npm run build`: genera la build de producción del frontend.
-- `npm run generate:icons`: regenera los iconos multiplataforma a partir de `src-tauri/icon.svg`.
-- `npm run tauri:dev`: levanta la aplicación de Tauri en modo desarrollo.
-- `npm run tauri:build`: empaqueta la aplicación para distribución.
+- `npm run dev`: Starts the Vite development server.
+- `npm run build`: Generates the production build of the frontend.
+- `npm run generate:icons`: Regenerates the multi-platform icons from `src-tauri/icon.svg`.
+- `npm run tauri:dev`: Launches the Tauri application in development mode.
+- `npm run tauri:build`: Packages the application for distribution.
 
-## Estructura del proyecto
+## Project structure
 
 ```
 soundcloud-wrapper-tauri/
@@ -37,18 +37,18 @@ soundcloud-wrapper-tauri/
 └── vite.config.ts
 ```
 
-## Iconos de la aplicación
+## Application icons
 
-El repositorio incluye un icono base vectorial en `src-tauri/icon.svg`. Durante el empaquetado los scripts ejecutan automáticamente `npm run generate:icons` para producir los artefactos específicos de cada plataforma dentro de `src-tauri/icons/` (ignorados en Git para evitar binarios). Si necesitas un diseño distinto, sustituye el SVG y vuelve a generar los iconos.
+The repository includes a base vector icon at `src-tauri/icon.svg`. During packaging the scripts automatically run `npm run generate:icons` to produce the platform-specific artefacts inside `src-tauri/icons/` (ignored in Git to avoid binaries). If you need a different design, replace the SVG and regenerate the icons.
 
-## Distribución y firma
+## Distribution and signing
 
-- `./scripts/build-macos.sh`: empaqueta un `.dmg` en macOS propagando `APPLE_IDENTITY`/`APPLE_TEAM_ID` si están definidos.
-- `./scripts/build-windows.ps1`: crea y firma (opcional) el `.msi` usando `signtool` cuando hay certificado.
-- `./scripts/build-linux.sh`: genera AppImage/Deb/RPM y firma con GPG si `LINUX_SIGNING_KEY_ID` está configurado.
+- `./scripts/build-macos.sh`: Packages a `.dmg` on macOS and forwards `APPLE_IDENTITY`/`APPLE_TEAM_ID` if they are set.
+- `./scripts/build-windows.ps1`: Builds and optionally signs the `.msi` using `signtool` when a certificate is available.
+- `./scripts/build-linux.sh`: Generates AppImage/Deb/RPM bundles and signs them with GPG if `LINUX_SIGNING_KEY_ID` is configured.
 
-Consulta `docs/release-signing.md` para los pasos detallados de codesign y notarización en cada plataforma.
+Check [`docs/release-signing.md`](docs/release-signing.md) for detailed code-signing and notarization steps per platform.
 
-## IDE recomendado
+## Recommended IDE
 
-- [VS Code](https://code.visualstudio.com/) con las extensiones [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) y [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer).
+- [VS Code](https://code.visualstudio.com/) with the [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) and [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer) extensions.
