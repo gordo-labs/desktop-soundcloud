@@ -1,6 +1,6 @@
-Configura empaquetado:
-- Ajusta tauri.conf.json para iconos por plataforma y productName.
-- Genera build scripts para macOS (dmg), Windows (msi) y Linux (AppImage/deb/rpm).
-- Documenta proceso de codesign: macOS (Developer ID), Windows (signtool + cert), Linux (firma de paquetes opcional).
-- Opcional: provee un workflow GitHub Actions para build multi-OS con caché Rust/Node.
-Entrega: archivos de config y comandos.
+Configure packaging:
+- Adjust `tauri.conf.json` for per-platform icons and `productName`.
+- Generate build scripts for macOS (dmg), Windows (msi), and Linux (AppImage/deb/rpm).
+- Document the codesign process: macOS (Developer ID), Windows (signtool + certificate), Linux (optional package signing).
+- Optional: provide a GitHub Actions workflow for multi-OS builds with Rust/Node caching.
+Deliver: configuration files and commands.

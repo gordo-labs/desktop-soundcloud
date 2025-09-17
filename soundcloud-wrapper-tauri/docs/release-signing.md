@@ -1,54 +1,54 @@
-# Distribución y firma de binarios
+# Distributing and signing binaries
 
-Este documento resume el proceso recomendado para firmar y notarizar los paquetes generados con los scripts de `scripts/`.
+This document summarises the recommended process for signing and notarising the packages produced by the scripts in `scripts/`.
 
 ## macOS (Developer ID)
 
-1. **Preparar certificados**
-   - Obtén un certificado *Developer ID Application* desde tu cuenta de Apple Developer y añádelo al llavero del sistema.
-   - Exporta el certificado y la clave privada como un `.p12` si usarás automatización en CI.
-2. **Variables de entorno claves**
-   - `APPLE_IDENTITY`: nombre exacto del certificado (por ejemplo `Developer ID Application: ACME Corp (TEAMID)`).
-   - `APPLE_TEAM_ID`: Team ID de Apple Developer.
-   - `APPLE_ID` y `APPLE_APP_SPECIFIC_PASSWORD`: credenciales necesarias si enviarás el binario a notarización automática.
-   - Opcional: `APPLE_NOTARYTOOL_PROFILE` si usas un perfil configurado con `xcrun notarytool store-credentials`.
-3. **Compilar y firmar**
-   - Ejecuta `./scripts/build-macos.sh` en un host macOS. El script propagará `APPLE_IDENTITY` y `APPLE_TEAM_ID` a las variables esperadas por Tauri (`TAURI_SIGNING_IDENTITY` y `TAURI_APPLE_TEAM_ID`).
-   - El empaquetado genera un `.app` y un `.dmg` en `src-tauri/target/release/bundle/dmg/`.
-4. **Notarizar**
-   - Tras la compilación, sube el `.dmg` con `xcrun notarytool submit <ruta>.dmg --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --wait`.
-   - Añade el ticket: `xcrun stapler staple <ruta>.dmg`.
+1. **Prepare certificates**
+   - Obtain a *Developer ID Application* certificate from your Apple Developer account and add it to the system keychain.
+   - Export the certificate and private key as a `.p12` file if you plan to automate the process in CI.
+2. **Important environment variables**
+   - `APPLE_IDENTITY`: exact certificate name (for example `Developer ID Application: ACME Corp (TEAMID)`).
+   - `APPLE_TEAM_ID`: Apple Developer Team ID.
+   - `APPLE_ID` and `APPLE_APP_SPECIFIC_PASSWORD`: credentials required to submit the binary for automatic notarisation.
+   - Optional: `APPLE_NOTARYTOOL_PROFILE` if you use a profile configured via `xcrun notarytool store-credentials`.
+3. **Build and sign**
+   - Run `./scripts/build-macos.sh` on a macOS host. The script forwards `APPLE_IDENTITY` and `APPLE_TEAM_ID` to the variables expected by Tauri (`TAURI_SIGNING_IDENTITY` and `TAURI_APPLE_TEAM_ID`).
+   - Packaging produces a `.app` bundle and a `.dmg` under `src-tauri/target/release/bundle/dmg/`.
+4. **Notarise**
+   - After building, upload the `.dmg` with `xcrun notarytool submit <path>.dmg --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --wait`.
+   - Staple the ticket: `xcrun stapler staple <path>.dmg`.
 
 ## Windows (MSI + SignTool)
 
-1. **Preparar el certificado**
-   - Consigue un certificado de firma de código (idealmente EV) y exporta un `.pfx` con su contraseña.
-   - Instala las *Windows SDK Signing Tools* (`signtool.exe`).
-2. **Variables y parámetros**
-   - `SIGNING_CERTIFICATE_PATH`: ruta al `.pfx`.
-   - `SIGNING_CERTIFICATE_PASSWORD`: contraseña del `.pfx`.
-   - `TIMESTAMP_URL` (opcional): URL del servicio de sellado de tiempo. Por defecto el script usa `http://timestamp.digicert.com`.
-3. **Compilar y firmar**
-   - Ejecuta `powershell.exe -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1`.
-   - Tras `cargo tauri build --bundles msi`, el script localizará el MSI más reciente y lo firmará con `signtool sign /fd SHA256 /tr <timestamp> /td SHA256`.
-4. **Verificación**
-   - Usa `signtool verify /pa <ruta>.msi` para comprobar la firma.
+1. **Prepare the certificate**
+   - Acquire a code-signing certificate (EV preferred) and export a `.pfx` file with its password.
+   - Install the *Windows SDK Signing Tools* (`signtool.exe`).
+2. **Variables and parameters**
+   - `SIGNING_CERTIFICATE_PATH`: path to the `.pfx` file.
+   - `SIGNING_CERTIFICATE_PASSWORD`: password for the `.pfx` file.
+   - `TIMESTAMP_URL` (optional): timestamping service URL. The script defaults to `http://timestamp.digicert.com`.
+3. **Build and sign**
+   - Execute `powershell.exe -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1`.
+   - After `cargo tauri build --bundles msi`, the script locates the most recent MSI and signs it with `signtool sign /fd SHA256 /tr <timestamp> /td SHA256`.
+4. **Verification**
+   - Use `signtool verify /pa <path>.msi` to confirm the signature.
 
 ## Linux (AppImage/Deb/RPM)
 
-1. **Clave GPG opcional**
-   - Importa tu clave: `gpg --import private.key`.
-   - Elige el identificador (fingerprint o correo) que se usará para firmar.
-2. **Variable opcional**
-   - `LINUX_SIGNING_KEY_ID`: fingerprint o UID de la clave que se usará para firmar con `gpg --detach-sign`.
-3. **Compilar**
-   - Ejecuta `./scripts/build-linux.sh`. Se crearán los paquetes en `src-tauri/target/release/bundle/{appimage,deb,rpm}/`.
-   - Si `LINUX_SIGNING_KEY_ID` está definido, cada artefacto generará un archivo `.sig` asociado.
-4. **Publicación**
-   - Para repositorios APT/YUM, publica también las firmas y asegura que la clave pública esté disponible para los usuarios.
+1. **Optional GPG key**
+   - Import your key: `gpg --import private.key`.
+   - Choose the identifier (fingerprint or email) that will be used to sign.
+2. **Optional variable**
+   - `LINUX_SIGNING_KEY_ID`: fingerprint or UID of the key used for `gpg --detach-sign`.
+3. **Build**
+   - Run `./scripts/build-linux.sh`. Packages will be created in `src-tauri/target/release/bundle/{appimage,deb,rpm}/`.
+   - If `LINUX_SIGNING_KEY_ID` is defined, each artefact generates a corresponding `.sig` file.
+4. **Publishing**
+   - For APT/YUM repositories, publish the signatures alongside the artefacts and ensure the public key is available to users.
 
-## Buenas prácticas generales
+## General best practices
 
-- Ejecuta `npm ci` y `cargo tauri build` en un árbol limpio para evitar artefactos antiguos.
-- Conserva los certificados y contraseñas en un gestor seguro y usa secretos cifrados en CI.
-- Automatiza la subida de artefactos firmados a tu CDN o repositorio de lanzamientos para evitar manipulaciones manuales.
+- Run `npm ci` and `cargo tauri build` from a clean tree to avoid stale artefacts.
+- Store certificates and passwords in a secure manager and use encrypted secrets in CI.
+- Automate uploading of signed artefacts to your CDN or release repository to eliminate manual handling.

@@ -1,74 +1,77 @@
 # SoundCloud Wrapper Desktop
 
-## Objetivo del proyecto
-SoundCloud Wrapper Desktop es una aplicación multiplataforma construida con Tauri cuyo objetivo es ofrecer una experiencia nativa ligera para escuchar SoundCloud dentro del WebView del sistema, integrándose con los controles multimedia, bandeja del sistema y notificaciones de cada sistema operativo sin depender de navegadores externos.
+## Project goal
+SoundCloud Wrapper Desktop is a cross-platform application built with Tauri. It delivers a lightweight native experience for listening to SoundCloud inside the system WebView while integrating with media controls, the system tray, and native notifications without depending on external browsers.
 
-## Arquitectura
-- **Backend en Rust (Tauri 2):** gestiona el ciclo de vida de la aplicación, registra atajos globales y controla la bandeja del sistema, además de inyectar un script propio cuando la ventana carga SoundCloud y de exponer un comando seguro `open_external` para abrir enlaces en el navegador predeterminado.
-- **Frontend ligero con Vite + TypeScript:** la interfaz empaquetada con Vite actúa como contenedor del sitio `https://soundcloud.com` y muestra un mensaje mínimo mientras se completa la integración.
-- **Puente de inyección:** el script `inject.js` captura el estado de `MediaSession`, emite eventos hacia Rust, intercepta enlaces externos para abrirlos fuera de la app y controla los botones nativos de SoundCloud para mantener sincronizados los comandos de reproducción.
-- **Integraciones específicas por plataforma:** el módulo de medios delega en MPRIS (Linux), SMTC (Windows) y la integración de macOS para reflejar el estado de reproducción y aceptar comandos del sistema.
+## Architecture
+- **Rust backend (Tauri 2):** Manages the application lifecycle, registers global shortcuts, controls the tray icon, injects a custom script when SoundCloud loads, and exposes a hardened `open_external` command that launches links in the default browser.
+- **Lightweight frontend with Vite + TypeScript:** Packages a minimal interface that embeds `https://soundcloud.com` and shows a placeholder while the integration finishes loading.
+- **Injection bridge:** The `inject.js` script tracks the `MediaSession` state, emits events back to Rust, intercepts external links so they open outside the app, and triggers SoundCloud UI buttons so playback commands stay in sync.
+- **Platform-specific integrations:** The media module delegates to MPRIS (Linux), SMTC (Windows), and the macOS media APIs to reflect playback status and receive commands from the operating system.
 
-## Requisitos
-### Comunes
-- Node.js 18 o superior y npm (o pnpm/yarn) para ejecutar los scripts de Vite/Tauri.
-- Rust estable y el `tauri-cli` (se instala automáticamente vía npm).
-- Acceso a una cuenta de SoundCloud (opcional) para probar login dentro del WebView.
+## Requirements
+### Common
+- Node.js 18 or newer and npm (or pnpm/yarn) to run the Vite/Tauri scripts.
+- Stable Rust and `tauri-cli` (installed automatically via npm).
+- (Optional) A SoundCloud account to test sign-in within the WebView.
 
 ### Windows
-- Windows 10/11 con el **WebView2 Runtime** instalado (incluso si ya tienes Microsoft Edge).
-- Microsoft Visual C++ Build Tools 2019 o superior.
+- Windows 10/11 with the **WebView2 Runtime** installed (even if Microsoft Edge is already available).
+- Microsoft Visual C++ Build Tools 2019 or newer.
 
 ### macOS
-- macOS 10.15 Catalina o superior (según `tauri.conf.json`).
-- Xcode Command Line Tools instaladas (incluye `clang`, `swift` y utilidades de codesign).
+- macOS 10.15 Catalina or newer (per `tauri.conf.json`).
+- Xcode Command Line Tools installed (`clang`, `swift`, and codesign utilities).
 
 ### Linux
-- Distribución con soporte para WebKitGTK 4.1 (por ejemplo Ubuntu 22.04+, Fedora 38+).
-- Paquetes requeridos: `libwebkit2gtk-4.1`, `libgtk-3-dev`, `libsoup-3.0`, `webkit2gtk-driver`, `libayatana-appindicator3` (esta última ya declarada como dependencia del paquete `.deb`).
+- A distribution that ships WebKitGTK 4.1 (for example Ubuntu 22.04+ or Fedora 38+).
+- Required packages: `libwebkit2gtk-4.1`, `libgtk-3-dev`, `libsoup-3.0`, `webkit2gtk-driver`, `libayatana-appindicator3` (declared as a dependency of the `.deb` package).
 
-## Instalación y ejecución
-1. Clona este repositorio y entra en la carpeta raíz del proyecto.
+## Installation and usage
+1. Clone the repository and enter the project root.
    ```bash
    git clone <url> desktop-soundcloud
    cd desktop-soundcloud/soundcloud-wrapper-tauri
    ```
-2. Instala dependencias de JavaScript y Rust.
+2. Install JavaScript and Rust dependencies.
    ```bash
    npm install
    ```
-3. Ejecuta en modo desarrollo con recarga en caliente dentro de una ventana nativa de Tauri.
+3. Launch the development build with hot reload inside the native Tauri window.
    ```bash
    npm run tauri:dev
    ```
-4. Genera un instalador para tu plataforma (AppImage/Deb/RPM, MSI o DMG) cuando estés listo para distribuir.
+4. Create an installer for your platform (AppImage/Deb/RPM, MSI, or DMG) when you are ready to distribute.
    ```bash
    npm run tauri:build
    ```
-5. Scripts adicionales útiles:
-   - `npm run dev`: solo arranca el servidor de Vite (útil para depurar frontend).
-   - `npm run build`: compila el frontend en `dist/`.
-   - `npm run test`: ejecuta la suite de pruebas con Vitest.
-   - `npm run generate:icons`: regenera los iconos a partir de `src-tauri/icon.svg`.
+5. Additional handy scripts:
+   - `npm run dev`: Starts the Vite development server (useful when debugging the frontend alone).
+   - `npm run build`: Bundles the frontend into `dist/`.
+   - `npm run test`: Runs the Vitest suite.
+   - `npm run generate:icons`: Regenerates icons from `src-tauri/icon.svg`.
 
-## Atajos y controles disponibles
-Los siguientes atajos funcionan aunque la ventana esté en segundo plano (según permisos del sistema):
-- `CmdOrCtrl + Alt + P` o tecla multimedia **Play/Pause**: alternar reproducción.
-- `CmdOrCtrl + Alt + N` o tecla multimedia **Next Track**: pista siguiente.
-- `CmdOrCtrl + Alt + B` o tecla multimedia **Previous Track**: pista anterior.
-- Tecla multimedia **Play**: forzar reproducción.
-- Tecla multimedia **Pause**: pausar reproducción.
-Estos atajos emiten eventos IPC que activan los selectores de los controles de SoundCloud dentro del WebView.
+See [`docs/how-to-build.md`](soundcloud-wrapper-tauri/docs/how-to-build.md) for platform-specific build tips and CI considerations.
 
-## Privacidad y seguridad
-- **Política de contenido estricta:** la configuración de Tauri aplica una CSP sin `unsafe-*`, deshabilita arrastrar y soltar y limita la ventana principal.
-- **Allowlist mínima:** solo se habilitan los eventos del core y el comando `open_external`, definido con validaciones adicionales de esquema y credenciales.
-- **Guardia de navegación:** se bloquea cualquier intento de cargar esquemas no permitidos (como `file://`) y los enlaces externos se fuerzan a abrirse en el navegador del sistema mediante `shell.open` con regex restringida.
-- **Integración con el sistema:** los estados de reproducción y cambios de tema se notifican con APIs nativas sin persistir datos sensibles más allá del caché en memoria usado para actualizar integraciones multimedia.
+## Available shortcuts and controls
+The following shortcuts work even when the window is in the background (subject to OS permissions):
+- `CmdOrCtrl + Alt + P` or the **Play/Pause** media key: toggle playback.
+- `CmdOrCtrl + Alt + N` or the **Next Track** media key: next track.
+- `CmdOrCtrl + Alt + B` or the **Previous Track** media key: previous track.
+- **Play** media key: force playback.
+- **Pause** media key: pause playback.
 
-## Limitaciones y notas legales
-- SoundCloud Wrapper Desktop no es una aplicación oficial de SoundCloud; únicamente reexpone la versión web en un contenedor nativo.
-- No implementa descarga de pistas, reproducción offline ni redistribución de streams; cualquier intento de extraer audio fuera del WebView va contra el objetivo del proyecto y puede vulnerar los Términos de Servicio de SoundCloud.
-- El uso de la aplicación debe respetar los Términos de Servicio y las licencias de SoundCloud. Comparte instaladores solo en los territorios donde SoundCloud esté disponible y evita modificar los binarios para burlar restricciones de contenido.
-- La autenticación se realiza directamente con los servidores oficiales de SoundCloud dentro del WebView; no se recolectan credenciales ni métricas externas.
-- Antes de distribuir builds firmadas, asegúrate de cumplir con los requisitos legales de cada plataforma (certificados de firma, notarización en macOS, marcas registradas de SoundCloud, etc.).
+Shortcuts emit IPC events that trigger the SoundCloud controls inside the WebView.
+
+## Privacy and security
+- **Strict Content Security Policy:** The Tauri configuration applies a CSP without `unsafe-*`, disables drag-and-drop, and limits the main window.
+- **Minimal allowlist:** Only core events and the `open_external` command are enabled, with additional schema and credential validation.
+- **Navigation guard:** Any attempt to load disallowed schemes (such as `file://`) is blocked, and external links are forced to open in the system browser via `shell.open` with a constrained regular expression.
+- **System integration:** Playback state and theme changes are relayed through native APIs without persisting sensitive data beyond the in-memory cache required to update media integrations.
+
+## Limitations and legal notes
+- SoundCloud Wrapper Desktop is not an official SoundCloud application; it simply re-exposes the web experience inside a native container.
+- It does not implement track downloads, offline playback, or stream redistribution. Any attempt to extract audio outside the WebView goes against the project goal and may violate the SoundCloud Terms of Service.
+- Use of the application must respect the SoundCloud Terms of Service and licensing. Share installers only in territories where SoundCloud is available and avoid modifying binaries to bypass content restrictions.
+- Authentication occurs directly with SoundCloud’s official servers inside the WebView; no credentials or external metrics are collected.
+- Before distributing signed builds, ensure you meet the legal requirements of each platform (signing certificates, macOS notarization, SoundCloud trademarks, etc.).
