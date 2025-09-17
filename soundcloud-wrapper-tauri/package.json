@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "test": "vitest run",
     "generate:icons": "tauri icon src-tauri/icon.svg",
     "preview": "vite preview",
     "tauri:dev": "tauri dev",
@@ -16,7 +17,8 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "typescript": "~5.6.2",
     "vite": "^6.0.3",
-    "typescript": "~5.6.2"
+    "vitest": "^3.2.4"
   }
 }
