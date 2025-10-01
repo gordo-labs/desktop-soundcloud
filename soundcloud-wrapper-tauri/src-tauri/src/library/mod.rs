@@ -241,6 +241,16 @@ impl LibraryStore {
         Ok(())
     }
 
+    pub fn sync_soundcloud_track(
+        &self,
+        track: &TrackRecord,
+        source: &SoundcloudSourceRecord,
+    ) -> Result<(), LibraryError> {
+        self.upsert_track(track)?;
+        self.link_soundcloud_source(source)?;
+        Ok(())
+    }
+
     pub fn record_local_asset(&self, record: &LocalAssetRecord) -> Result<(), LibraryError> {
         self.ensure_track(&record.track_id)?;
         self.connection.execute(

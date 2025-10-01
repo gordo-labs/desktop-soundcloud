@@ -20,6 +20,9 @@
   const MEDIA_STATE_EVENT = "app://media/state";
   const THEME_CHANGE_EVENT = "app://theme/change";
   const TRAY_HOME_EVENT = "app://tray/home";
+  const LIBRARY_LIKE_EVENT = "app://library/like-updated";
+  const LIBRARY_PLAYLIST_EVENT = "app://library/playlist-updated";
+  const LIBRARY_REFRESH_LIKES_EVENT = "app://library/likes/refresh";
 
   let backButtonHandle = null;
 
@@ -364,6 +367,474 @@
 
   document.addEventListener("click", interceptAnchorEvent, true);
   document.addEventListener("auxclick", interceptAnchorEvent, true);
+
+  const SOUND_CLOUD_API_PATTERN = /api(?:-v2)?\.soundcloud\.com/i;
+  const TRACK_ID_PREFIX = "soundcloud:";
+  const PLAYLIST_ID_PREFIX = "soundcloud-playlist:";
+  const likeDeltaCache = new Map();
+  const playlistTrackCache = new Map();
+
+  const parseSoundcloudNumericId = (value) => {
+    if (value == null) {
+      return null;
+    }
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return String(Math.trunc(value));
+    }
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (!trimmed) {
+        return null;
+      }
+      if (/^\d+$/.test(trimmed)) {
+        return trimmed;
+      }
+      if (trimmed.includes(":")) {
+        const segments = trimmed.split(":").filter(Boolean);
+        const candidate = segments[segments.length - 1];
+        if (candidate && /^\d+$/.test(candidate)) {
+          return candidate;
+        }
+      }
+    }
+    return null;
+  };
+
+  const buildTrackId = (soundcloudId) => {
+    if (!soundcloudId) {
+      return null;
+    }
+    return `${TRACK_ID_PREFIX}${soundcloudId}`;
+  };
+
+  const collectTags = (tagList, genre) => {
+    const tags = new Set();
+    const push = (value) => {
+      if (typeof value === "string") {
+        const normalized = value.trim();
+        if (normalized) {
+          tags.add(normalized);
+        }
+      }
+    };
+
+    push(genre);
+
+    if (Array.isArray(tagList)) {
+      tagList.forEach(push);
+    } else if (typeof tagList === "string" && tagList.trim()) {
+      const tokenizer = /"([^"]+)"|(\S+)/g;
+      let match;
+      while ((match = tokenizer.exec(tagList))) {
+        const token = match[1] ?? match[2];
+        push(token);
+      }
+    }
+
+    return Array.from(tags);
+  };
+
+  const resolvePermalink = (entity) => {
+    if (!entity || typeof entity !== "object") {
+      return null;
+    }
+    const permalinkUrl = entity.permalink_url;
+    if (typeof permalinkUrl === "string" && permalinkUrl.startsWith("http")) {
+      return permalinkUrl;
+    }
+    const uri = entity.uri;
+    if (typeof uri === "string" && uri.startsWith("http")) {
+      return uri;
+    }
+    const userPermalink = entity.user?.permalink;
+    const entityPermalink = entity.permalink;
+    if (typeof userPermalink === "string" && typeof entityPermalink === "string") {
+      return `https://soundcloud.com/${userPermalink}/${entityPermalink}`;
+    }
+    return null;
+  };
+
+  const normalizeDurationMs = (value) => {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return Math.trunc(value);
+    }
+    if (typeof value === "string") {
+      const parsed = Number.parseInt(value, 10);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+    return null;
+  };
+
+  const normalizeTrackPayload = (track, context = {}) => {
+    if (!track || typeof track !== "object") {
+      return null;
+    }
+    if (track.kind && track.kind !== "track") {
+      return null;
+    }
+
+    const soundcloudId = parseSoundcloudNumericId(track.id ?? track.urn);
+    const trackId = buildTrackId(soundcloudId);
+    if (!soundcloudId || !trackId) {
+      return null;
+    }
+
+    const publisherArtist = track.publisher_metadata?.artist;
+    const userArtist = track.user?.username;
+    const artist =
+      typeof publisherArtist === "string" && publisherArtist.trim()
+        ? publisherArtist
+        : typeof userArtist === "string"
+          ? userArtist
+          : null;
+
+    const artworkUrl =
+      typeof track.artwork_url === "string"
+        ? track.artwork_url
+        : typeof track.user?.avatar_url === "string"
+          ? track.user.avatar_url
+          : null;
+
+    const likedAt =
+      typeof context.likedAt === "string"
+        ? context.likedAt
+        : typeof track.last_modified === "string"
+          ? track.last_modified
+          : null;
+
+    const playlistId =
+      typeof context.playlistId === "string" && context.playlistId
+        ? context.playlistId
+        : null;
+    const playlistPosition =
+      typeof context.playlistPosition === "number" && Number.isFinite(context.playlistPosition)
+        ? context.playlistPosition
+        : null;
+
+    return {
+      kind: "track",
+      source: context.source ?? null,
+      trackId,
+      soundcloudId,
+      title: typeof track.title === "string" ? track.title : null,
+      artist,
+      tags: collectTags(track.tag_list, track.genre),
+      permalinkUrl: resolvePermalink(track),
+      artworkUrl,
+      durationMs: normalizeDurationMs(track.duration ?? track.full_duration),
+      likedAt,
+      playlistId,
+      playlistPosition,
+      raw: track,
+    };
+  };
+
+  const computeTrackSignature = (payload) =>
+    JSON.stringify([
+      payload.title ?? null,
+      payload.artist ?? null,
+      payload.artworkUrl ?? null,
+      payload.permalinkUrl ?? null,
+      payload.durationMs ?? null,
+      payload.likedAt ?? null,
+      payload.tags,
+      payload.playlistId ?? null,
+      payload.playlistPosition ?? null,
+    ]);
+
+  const emitLikePayload = (payload, options = {}) => {
+    if (!payload || !payload.trackId) {
+      return false;
+    }
+    const force = Boolean(options.force);
+    const signature = computeTrackSignature(payload);
+    const existing = likeDeltaCache.get(payload.trackId);
+    likeDeltaCache.set(payload.trackId, { signature, payload });
+    if (!force && existing && existing.signature === signature) {
+      return false;
+    }
+    emit(LIBRARY_LIKE_EVENT, payload).catch((error) => {
+      console.error("[SoundCloud Wrapper] Failed to emit like update", error);
+    });
+    return true;
+  };
+
+  const normalizePlaylistPayload = (playlist, context = {}) => {
+    if (!playlist || typeof playlist !== "object") {
+      return null;
+    }
+    if (playlist.kind && playlist.kind !== "playlist") {
+      return null;
+    }
+
+    const soundcloudId = parseSoundcloudNumericId(playlist.id ?? playlist.urn);
+    if (!soundcloudId) {
+      return null;
+    }
+    const playlistId = `${PLAYLIST_ID_PREFIX}${soundcloudId}`;
+    const updatedAt =
+      typeof context.updatedAt === "string"
+        ? context.updatedAt
+        : typeof playlist.last_modified === "string"
+          ? playlist.last_modified
+          : null;
+
+    return {
+      kind: "playlist",
+      playlistId,
+      soundcloudId,
+      title: typeof playlist.title === "string" ? playlist.title : null,
+      permalinkUrl: resolvePermalink(playlist),
+      tags: collectTags(playlist.tag_list, playlist.genre),
+      trackCount: Array.isArray(playlist.tracks) ? playlist.tracks.length : null,
+      updatedAt,
+      raw: playlist,
+      tracks: [],
+    };
+  };
+
+  const processPlaylistObject = (playlist, context = {}) => {
+    const normalized = normalizePlaylistPayload(playlist, context);
+    if (!normalized) {
+      return false;
+    }
+
+    const tracks = Array.isArray(playlist?.tracks) ? playlist.tracks : [];
+    const changedTracks = [];
+
+    tracks.forEach((track, index) => {
+      const payload = normalizeTrackPayload(track, {
+        source: "playlist",
+        playlistId: normalized.playlistId,
+        playlistPosition: index,
+      });
+      if (!payload) {
+        return;
+      }
+      const cacheKey = `${normalized.playlistId}:${payload.trackId}`;
+      const signature = computeTrackSignature(payload);
+      const existing = playlistTrackCache.get(cacheKey);
+      playlistTrackCache.set(cacheKey, { signature, payload });
+      if (!existing || existing.signature !== signature) {
+        changedTracks.push(payload);
+      }
+    });
+
+    if (changedTracks.length === 0) {
+      return false;
+    }
+
+    normalized.tracks = changedTracks;
+    emit(LIBRARY_PLAYLIST_EVENT, normalized).catch((error) => {
+      console.error("[SoundCloud Wrapper] Failed to emit playlist update", error);
+    });
+    return true;
+  };
+
+  const processTrackLike = (track, context = {}) => {
+    const payload = normalizeTrackPayload(track, {
+      source: context.source ?? "likes",
+      likedAt: context.likedAt,
+      playlistId: context.playlistId,
+      playlistPosition: context.playlistPosition,
+    });
+    if (!payload) {
+      return false;
+    }
+    return emitLikePayload(payload, { force: Boolean(context.force) });
+  };
+
+  const classifyUrl = (url) => {
+    if (!url) {
+      return "unknown";
+    }
+    const normalized = String(url).toLowerCase();
+    if (normalized.includes("track_likes") || normalized.includes("/likes")) {
+      return "likes";
+    }
+    if (normalized.includes("playlist_likes")) {
+      return "playlistLikes";
+    }
+    if (normalized.includes("/playlists") || normalized.includes("/sets")) {
+      return "playlists";
+    }
+    return "unknown";
+  };
+
+  const processSoundcloudCollection = (url, collection, envelope) => {
+    if (!Array.isArray(collection)) {
+      return false;
+    }
+    const classification = classifyUrl(url);
+    let handled = false;
+
+    collection.forEach((entry) => {
+      if (!entry || typeof entry !== "object") {
+        return;
+      }
+
+      const createdAt =
+        typeof entry.created_at === "string"
+          ? entry.created_at
+          : typeof envelope?.created_at === "string"
+            ? envelope.created_at
+            : null;
+
+      if (entry.track) {
+        handled = processTrackLike(entry.track, { likedAt: createdAt, source: "likes" }) || handled;
+        return;
+      }
+      if (entry.playlist) {
+        handled = processPlaylistObject(entry.playlist, { updatedAt: createdAt }) || handled;
+        return;
+      }
+      if (entry.kind === "track" && (classification === "likes" || classification === "unknown")) {
+        handled = processTrackLike(entry, { likedAt: createdAt, source: "likes" }) || handled;
+        return;
+      }
+      if (entry.kind === "playlist" && classification !== "likes") {
+        handled = processPlaylistObject(entry, { updatedAt: createdAt }) || handled;
+      }
+    });
+
+    return handled;
+  };
+
+  const processSoundcloudPayload = (url, payload) => {
+    if (!payload || typeof payload !== "object") {
+      return false;
+    }
+
+    let handled = false;
+
+    if (Array.isArray(payload.collection)) {
+      handled = processSoundcloudCollection(url, payload.collection, payload) || handled;
+    }
+
+    if (handled) {
+      return true;
+    }
+
+    const createdAt = typeof payload.created_at === "string" ? payload.created_at : null;
+
+    if (payload.track) {
+      return processTrackLike(payload.track, { likedAt: createdAt, source: "likes" });
+    }
+
+    if (payload.kind === "track") {
+      return processTrackLike(payload, { likedAt: createdAt, source: "likes" });
+    }
+
+    if (payload.playlist) {
+      return processPlaylistObject(payload.playlist, { updatedAt: createdAt });
+    }
+
+    if (payload.kind === "playlist") {
+      return processPlaylistObject(payload, { updatedAt: createdAt });
+    }
+
+    return false;
+  };
+
+  const handleSoundcloudResponse = (url, data) => {
+    if (!url || !SOUND_CLOUD_API_PATTERN.test(String(url))) {
+      return;
+    }
+    try {
+      processSoundcloudPayload(url, data);
+    } catch (error) {
+      console.error("[SoundCloud Wrapper] Failed to process SoundCloud response", error);
+    }
+  };
+
+  if (typeof window.fetch === "function") {
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = async function patchedFetch(input, init) {
+      const response = await originalFetch(input, init);
+      try {
+        const requestUrl = typeof input === "string" ? input : input?.url;
+        if (!requestUrl || !SOUND_CLOUD_API_PATTERN.test(String(requestUrl))) {
+          return response;
+        }
+
+        const clone = response.clone();
+        const contentType = (clone.headers?.get("content-type") || "").toLowerCase();
+        if (clone.status === 204 || !contentType.includes("application/json")) {
+          return response;
+        }
+
+        clone
+          .json()
+          .then((data) => handleSoundcloudResponse(requestUrl, data))
+          .catch(() => {
+            /* ignore parse errors */
+          });
+      } catch (error) {
+        console.warn("[SoundCloud Wrapper] Unable to inspect fetch response", error);
+      }
+      return response;
+    };
+  }
+
+  if (typeof XMLHttpRequest !== "undefined") {
+    const originalXHROpen = XMLHttpRequest.prototype.open;
+    const originalXHRSend = XMLHttpRequest.prototype.send;
+
+    XMLHttpRequest.prototype.open = function patchedOpen(...args) {
+      try {
+        const [, url] = args;
+        this.__soundcloudWrapperUrl = typeof url === "string" ? url : url?.toString?.() ?? "";
+      } catch (_error) {
+        this.__soundcloudWrapperUrl = "";
+      }
+      return originalXHROpen.apply(this, args);
+    };
+
+    XMLHttpRequest.prototype.send = function patchedSend(...args) {
+      const finalize = () => {
+        try {
+          const requestUrl = this.__soundcloudWrapperUrl;
+          if (!requestUrl || !SOUND_CLOUD_API_PATTERN.test(String(requestUrl))) {
+            return;
+          }
+          const responseType = this.responseType;
+          if (responseType && responseType !== "" && responseType !== "text" && responseType !== "json") {
+            return;
+          }
+          let data = null;
+          if (responseType === "json" && this.response != null) {
+            data = this.response;
+          } else if (this.responseText) {
+            try {
+              data = JSON.parse(this.responseText);
+            } catch (_error) {
+              data = null;
+            }
+          }
+          if (data) {
+            handleSoundcloudResponse(requestUrl, data);
+          }
+        } catch (error) {
+          console.warn("[SoundCloud Wrapper] Unable to inspect XHR response", error);
+        }
+      };
+
+      this.addEventListener("load", finalize, { once: true });
+      return originalXHRSend.apply(this, args);
+    };
+  }
+
+  listen(LIBRARY_REFRESH_LIKES_EVENT, () => {
+    for (const entry of likeDeltaCache.values()) {
+      if (entry && entry.payload) {
+        emitLikePayload(entry.payload, { force: true });
+      }
+    }
+  }).catch((error) => {
+    console.error("[SoundCloud Wrapper] Failed to listen for likes refresh", error);
+  });
 
   const SELECTORS = {
     toggle: [
