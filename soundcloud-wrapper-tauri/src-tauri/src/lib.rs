@@ -1,9 +1,11 @@
+mod library;
 mod media;
 
 use std::error::Error;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
+use library::{LibraryStore, LocalAssetRecord, SoundcloudSourceRecord, TrackRecord};
 use media::{MediaCache, MediaIntegration, MediaUpdate, MediaUpdatePayload, ThemeChangePayload};
 use serde_json::{self, Value};
 use tauri::menu::MenuBuilder;
@@ -29,6 +31,7 @@ const TRAY_MENU_EXIT: &str = "tray://exit";
 
 struct AppState {
     media: Mutex<MediaManager>,
+    library: Arc<Mutex<LibraryStore>>,
 }
 
 struct MediaManager {
@@ -37,13 +40,16 @@ struct MediaManager {
 }
 
 impl AppState {
-    fn new(app: &AppHandle) -> Self {
-        Self {
+    fn new(app: &AppHandle) -> Result<Self, library::LibraryError> {
+        let library = LibraryStore::initialize(app)?;
+
+        Ok(Self {
             media: Mutex::new(MediaManager {
                 integration: MediaIntegration::initialize(app),
                 cache: MediaCache::default(),
             }),
-        }
+            library: Arc::new(Mutex::new(library)),
+        })
     }
 }
 
@@ -78,6 +84,56 @@ fn open_external(app: AppHandle, url: String) -> Result<(), String> {
         }
         scheme => Err(format!("unsupported scheme '{scheme}'")),
     }
+}
+
+#[tauri::command]
+fn upsert_track(state: tauri::State<AppState>, record: TrackRecord) -> Result<(), String> {
+    let store = state
+        .library
+        .lock()
+        .map_err(|_| "library store lock poisoned".to_string())?;
+    store
+        .upsert_track(&record)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn link_soundcloud_source(
+    state: tauri::State<AppState>,
+    record: SoundcloudSourceRecord,
+) -> Result<(), String> {
+    let store = state
+        .library
+        .lock()
+        .map_err(|_| "library store lock poisoned".to_string())?;
+    store
+        .link_soundcloud_source(&record)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn record_local_asset(
+    state: tauri::State<AppState>,
+    record: LocalAssetRecord,
+) -> Result<(), String> {
+    let store = state
+        .library
+        .lock()
+        .map_err(|_| "library store lock poisoned".to_string())?;
+    store
+        .record_local_asset(&record)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_missing_assets(state: tauri::State<AppState>) -> Result<Vec<String>, String> {
+    let store = state
+        .library
+        .lock()
+        .map_err(|_| "library store lock poisoned".to_string())?;
+    store
+        .list_missing_assets()
+        .map_err(|error| error.to_string())
 }
 
 fn register_media_shortcuts(app: &AppHandle) -> Result<(), tauri_plugin_global_shortcut::Error> {
@@ -151,11 +207,19 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
-        .invoke_handler(tauri::generate_handler![open_external])
+        .invoke_handler(tauri::generate_handler![
+            open_external,
+            upsert_track,
+            link_soundcloud_source,
+            record_local_asset,
+            list_missing_assets
+        ])
         .setup(|app| {
             register_media_shortcuts(&app.handle())
                 .map_err(|error| -> Box<dyn Error> { Box::new(error) })?;
-            app.manage(AppState::new(&app.handle()));
+            let app_state = AppState::new(&app.handle())
+                .map_err(|error| -> Box<dyn Error> { Box::new(error) })?;
+            app.manage(app_state);
             app.manage(WindowState::default());
             let tray =
                 setup_tray(&app.handle()).map_err(|error| -> Box<dyn Error> { Box::new(error) })?;
