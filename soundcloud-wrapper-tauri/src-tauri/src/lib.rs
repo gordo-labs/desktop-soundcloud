@@ -473,7 +473,8 @@ pub fn run() {
                             title: payload.title.clone(),
                             artist: payload.artist.clone(),
                             album: None,
-                            discogs_payload: None,
+                            discogs_release_id: None,
+                            discogs_confidence: None,
                         };
                         let source_record = SoundcloudSourceRecord {
                             track_id: payload.track_id.clone(),
@@ -515,7 +516,8 @@ pub fn run() {
                                 title: track.title.clone(),
                                 artist: track.artist.clone(),
                                 album: None,
-                                discogs_payload: None,
+                                discogs_release_id: None,
+                                discogs_confidence: None,
                             };
                             let source_record = SoundcloudSourceRecord {
                                 track_id: track.track_id.clone(),

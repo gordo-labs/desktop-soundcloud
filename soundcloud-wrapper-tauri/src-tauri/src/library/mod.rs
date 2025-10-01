@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -70,7 +70,53 @@ pub struct TrackRecord {
     #[serde(default)]
     pub album: Option<String>,
     #[serde(default)]
-    pub discogs_payload: Option<Value>,
+    pub discogs_release_id: Option<String>,
+    #[serde(default)]
+    pub discogs_confidence: Option<f32>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum DiscogsMatchStatus {
+    Success,
+    Ambiguous,
+    Error,
+}
+
+impl DiscogsMatchStatus {
+    fn as_str(&self) -> &'static str {
+        match self {
+            DiscogsMatchStatus::Success => "success",
+            DiscogsMatchStatus::Ambiguous => "ambiguous",
+            DiscogsMatchStatus::Error => "error",
+        }
+    }
+
+    fn from_str(value: &str) -> Self {
+        match value {
+            "success" => DiscogsMatchStatus::Success,
+            "ambiguous" => DiscogsMatchStatus::Ambiguous,
+            _ => DiscogsMatchStatus::Error,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DiscogsMatchRecord {
+    pub track_id: String,
+    pub release_id: Option<String>,
+    pub confidence: Option<f32>,
+    pub status: DiscogsMatchStatus,
+    pub query: Option<String>,
+    pub message: Option<String>,
+    pub checked_at: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiscogsCandidateRecord {
+    pub match_id: String,
+    pub release_id: Option<String>,
+    pub score: Option<f32>,
+    pub raw_payload: Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -131,6 +177,8 @@ impl LibraryStore {
                 artist TEXT,
                 album TEXT,
                 discogs_payload TEXT,
+                discogs_release_id TEXT,
+                discogs_confidence REAL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -167,6 +215,30 @@ impl LibraryStore {
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY(track_id) REFERENCES tracks(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS discogs_matches (
+                track_id TEXT PRIMARY KEY,
+                release_id TEXT,
+                confidence REAL,
+                status TEXT NOT NULL,
+                query TEXT,
+                message TEXT,
+                checked_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY(track_id) REFERENCES tracks(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS discogs_candidates (
+                match_id TEXT NOT NULL,
+                release_id TEXT,
+                score REAL,
+                raw_payload TEXT NOT NULL,
+                FOREIGN KEY(match_id) REFERENCES discogs_matches(track_id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS discogs_matches_release_idx ON discogs_matches(release_id);
+            CREATE INDEX IF NOT EXISTS discogs_matches_status_idx ON discogs_matches(status);
+            CREATE INDEX IF NOT EXISTS discogs_candidates_match_idx ON discogs_candidates(match_id);
+            CREATE INDEX IF NOT EXISTS discogs_candidates_release_idx ON discogs_candidates(release_id);
             "#,
         )?;
 
@@ -180,25 +252,44 @@ impl LibraryStore {
                 _ => return Err(error.into()),
             }
         }
+
+        if let Err(error) = self
+            .connection
+            .execute("ALTER TABLE tracks ADD COLUMN discogs_release_id TEXT;", [])
+        {
+            match error {
+                rusqlite::Error::SqliteFailure(ref failure, _)
+                    if failure.code == ErrorCode::DuplicateColumnName => {}
+                _ => return Err(error.into()),
+            }
+        }
+
+        if let Err(error) = self
+            .connection
+            .execute("ALTER TABLE tracks ADD COLUMN discogs_confidence REAL;", [])
+        {
+            match error {
+                rusqlite::Error::SqliteFailure(ref failure, _)
+                    if failure.code == ErrorCode::DuplicateColumnName => {}
+                _ => return Err(error.into()),
+            }
+        }
+
+        self.migrate_discogs_payloads()?;
         Ok(())
     }
 
     pub fn upsert_track(&self, record: &TrackRecord) -> Result<(), LibraryError> {
-        let discogs_payload = record
-            .discogs_payload
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()?;
-
         self.connection.execute(
             r#"
-            INSERT INTO tracks (id, title, artist, album, discogs_payload)
-            VALUES (:id, :title, :artist, :album, :discogs_payload)
+            INSERT INTO tracks (id, title, artist, album, discogs_release_id, discogs_confidence)
+            VALUES (:id, :title, :artist, :album, :discogs_release_id, :discogs_confidence)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 artist = excluded.artist,
                 album = excluded.album,
-                discogs_payload = excluded.discogs_payload,
+                discogs_release_id = excluded.discogs_release_id,
+                discogs_confidence = excluded.discogs_confidence,
                 updated_at = datetime('now');
             "#,
             rusqlite::named_params! {
@@ -206,7 +297,8 @@ impl LibraryStore {
                 ":title": record.title,
                 ":artist": record.artist,
                 ":album": record.album,
-                ":discogs_payload": discogs_payload,
+                ":discogs_release_id": record.discogs_release_id,
+                ":discogs_confidence": record.discogs_confidence.map(|value| value as f64),
             },
         )?;
 
@@ -251,6 +343,128 @@ impl LibraryStore {
         Ok(())
     }
 
+    pub fn record_discogs_match(
+        &self,
+        record: &DiscogsMatchRecord,
+        candidates: &[DiscogsCandidateRecord],
+    ) -> Result<(), LibraryError> {
+        let transaction = self.connection.transaction()?;
+        self.persist_discogs_match(&transaction, record, candidates)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn list_discogs_candidates(
+        &self,
+        track_id: &str,
+    ) -> Result<Vec<DiscogsCandidateRecord>, LibraryError> {
+        let mut statement = self.connection.prepare(
+            r#"
+            SELECT match_id, release_id, score, raw_payload
+            FROM discogs_candidates
+            WHERE match_id = :match_id
+            ORDER BY score DESC;
+            "#,
+        )?;
+
+        let mut rows = statement.query(rusqlite::named_params! { ":match_id": track_id })?;
+        let mut result = Vec::new();
+
+        while let Some(row) = rows.next()? {
+            let match_id: String = row.get(0)?;
+            let release_id: Option<String> = row.get(1)?;
+            let score: Option<f64> = row.get(2)?;
+            let raw_payload: String = row.get(3)?;
+            let raw_payload: Value = serde_json::from_str(&raw_payload)?;
+
+            result.push(DiscogsCandidateRecord {
+                match_id,
+                release_id,
+                score: score.map(|value| value as f32),
+                raw_payload,
+            });
+        }
+
+        Ok(result)
+    }
+
+    fn persist_discogs_match(
+        &self,
+        transaction: &rusqlite::Transaction<'_>,
+        record: &DiscogsMatchRecord,
+        candidates: &[DiscogsCandidateRecord],
+    ) -> Result<(), LibraryError> {
+        transaction.execute(
+            "INSERT OR IGNORE INTO tracks (id) VALUES (:track_id);",
+            rusqlite::named_params! { ":track_id": &record.track_id },
+        )?;
+
+        transaction.execute(
+            r#"
+            INSERT INTO discogs_matches (track_id, release_id, confidence, status, query, message, checked_at)
+            VALUES (:track_id, :release_id, :confidence, :status, :query, :message, COALESCE(:checked_at, datetime('now')))
+            ON CONFLICT(track_id) DO UPDATE SET
+                release_id = excluded.release_id,
+                confidence = excluded.confidence,
+                status = excluded.status,
+                query = excluded.query,
+                message = excluded.message,
+                checked_at = excluded.checked_at;
+            "#,
+            rusqlite::named_params! {
+                ":track_id": &record.track_id,
+                ":release_id": record.release_id.as_ref(),
+                ":confidence": record.confidence.map(|value| value as f64),
+                ":status": record.status.as_str(),
+                ":query": record.query.as_ref(),
+                ":message": record.message.as_ref(),
+                ":checked_at": record.checked_at.as_deref(),
+            },
+        )?;
+
+        transaction.execute(
+            r#"
+            UPDATE tracks
+            SET discogs_release_id = :release_id,
+                discogs_confidence = :confidence,
+                updated_at = datetime('now')
+            WHERE id = :track_id;
+            "#,
+            rusqlite::named_params! {
+                ":track_id": &record.track_id,
+                ":release_id": record.release_id.as_ref(),
+                ":confidence": record.confidence.map(|value| value as f64),
+            },
+        )?;
+
+        transaction.execute(
+            "DELETE FROM discogs_candidates WHERE match_id = :match_id;",
+            rusqlite::named_params! { ":match_id": &record.track_id },
+        )?;
+
+        for candidate in candidates {
+            if candidate.match_id != record.track_id {
+                continue;
+            }
+
+            let raw_payload = serde_json::to_string(&candidate.raw_payload)?;
+            transaction.execute(
+                r#"
+                INSERT INTO discogs_candidates (match_id, release_id, score, raw_payload)
+                VALUES (:match_id, :release_id, :score, :raw_payload);
+                "#,
+                rusqlite::named_params! {
+                    ":match_id": &record.track_id,
+                    ":release_id": candidate.release_id.as_ref(),
+                    ":score": candidate.score.map(|value| value as f64),
+                    ":raw_payload": raw_payload,
+                },
+            )?;
+        }
+
+        Ok(())
+    }
+
     pub fn record_discogs_success(
         &self,
         track_id: &str,
@@ -258,13 +472,30 @@ impl LibraryStore {
         release: &Value,
         confidence: f32,
     ) -> Result<(), LibraryError> {
-        let payload = json!({
-            "status": "success",
-            "query": query,
-            "confidence": confidence,
-            "release": release,
-        });
-        self.update_discogs_payload(track_id, &payload)
+        let release_id = extract_release_id(release);
+        let score = release
+            .get("score")
+            .and_then(|value| value.as_f64())
+            .map(|value| value as f32)
+            .or(Some(confidence));
+
+        let candidate = DiscogsCandidateRecord {
+            match_id: track_id.to_string(),
+            release_id: release_id.clone(),
+            score,
+            raw_payload: release.clone(),
+        };
+        let record = DiscogsMatchRecord {
+            track_id: track_id.to_string(),
+            release_id,
+            confidence: Some(confidence),
+            status: DiscogsMatchStatus::Success,
+            query: Some(query.to_string()),
+            message: None,
+            checked_at: None,
+        };
+
+        self.record_discogs_match(&record, &[candidate])
     }
 
     pub fn record_discogs_ambiguity(
@@ -273,12 +504,34 @@ impl LibraryStore {
         query: &str,
         candidates: &[Value],
     ) -> Result<(), LibraryError> {
-        let payload = json!({
-            "status": "ambiguous",
-            "query": query,
-            "candidates": candidates,
-        });
-        self.update_discogs_payload(track_id, &payload)
+        let candidate_records = candidates
+            .iter()
+            .filter_map(|candidate| {
+                let release_id = extract_release_id(candidate);
+                let raw_payload = candidate.clone();
+                release_id.map(|release_id| DiscogsCandidateRecord {
+                    match_id: track_id.to_string(),
+                    release_id: Some(release_id),
+                    score: candidate
+                        .get("score")
+                        .and_then(|value| value.as_f64())
+                        .map(|value| value as f32),
+                    raw_payload,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let record = DiscogsMatchRecord {
+            track_id: track_id.to_string(),
+            release_id: None,
+            confidence: None,
+            status: DiscogsMatchStatus::Ambiguous,
+            query: Some(query.to_string()),
+            message: None,
+            checked_at: None,
+        };
+
+        self.record_discogs_match(&record, &candidate_records)
     }
 
     pub fn record_discogs_failure(
@@ -287,12 +540,17 @@ impl LibraryStore {
         query: &str,
         reason: &str,
     ) -> Result<(), LibraryError> {
-        let payload = json!({
-            "status": "error",
-            "query": query,
-            "reason": reason,
-        });
-        self.update_discogs_payload(track_id, &payload)
+        let record = DiscogsMatchRecord {
+            track_id: track_id.to_string(),
+            release_id: None,
+            confidence: None,
+            status: DiscogsMatchStatus::Error,
+            query: Some(query.to_string()),
+            message: Some(reason.to_string()),
+            checked_at: None,
+        };
+
+        self.record_discogs_match(&record, &[])
     }
 
     pub fn record_local_asset(&self, record: &LocalAssetRecord) -> Result<(), LibraryError> {
@@ -480,28 +738,109 @@ impl LibraryStore {
         Ok(result)
     }
 
+    fn migrate_discogs_payloads(&self) -> Result<(), LibraryError> {
+        let mut transaction = self.connection.transaction()?;
+
+        {
+            let mut statement = transaction.prepare(
+                "SELECT id, discogs_payload FROM tracks WHERE discogs_payload IS NOT NULL;",
+            )?;
+            let mut rows = statement.query([])?;
+
+            while let Some(row) = rows.next()? {
+                let track_id: String = row.get(0)?;
+                let payload_json: String = row.get(1)?;
+                let payload: Value = serde_json::from_str(&payload_json)?;
+
+                let status = payload
+                    .get("status")
+                    .and_then(|value| value.as_str())
+                    .map(DiscogsMatchStatus::from_str)
+                    .unwrap_or(DiscogsMatchStatus::Error);
+                let query = payload
+                    .get("query")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.to_string());
+                let message = payload
+                    .get("reason")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.to_string());
+
+                let mut release_id = None;
+                let mut confidence = payload
+                    .get("confidence")
+                    .and_then(|value| value.as_f64())
+                    .map(|value| value as f32);
+                let mut candidate_records = Vec::new();
+
+                match status {
+                    DiscogsMatchStatus::Success => {
+                        if let Some(release) = payload.get("release") {
+                            release_id = extract_release_id(release);
+                            let score = release
+                                .get("score")
+                                .and_then(|value| value.as_f64())
+                                .map(|value| value as f32)
+                                .or(confidence);
+                            candidate_records.push(DiscogsCandidateRecord {
+                                match_id: track_id.clone(),
+                                release_id: release_id.clone(),
+                                score,
+                                raw_payload: release.clone(),
+                            });
+                        }
+                    }
+                    DiscogsMatchStatus::Ambiguous => {
+                        confidence = None;
+                        if let Some(candidates) =
+                            payload.get("candidates").and_then(|value| value.as_array())
+                        {
+                            for candidate in candidates {
+                                if let Some(id) = extract_release_id(candidate) {
+                                    candidate_records.push(DiscogsCandidateRecord {
+                                        match_id: track_id.clone(),
+                                        release_id: Some(id),
+                                        score: candidate
+                                            .get("score")
+                                            .and_then(|value| value.as_f64())
+                                            .map(|value| value as f32),
+                                        raw_payload: candidate.clone(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    DiscogsMatchStatus::Error => {
+                        confidence = None;
+                    }
+                }
+
+                let match_record = DiscogsMatchRecord {
+                    track_id: track_id.clone(),
+                    release_id,
+                    confidence,
+                    status,
+                    query,
+                    message,
+                    checked_at: None,
+                };
+
+                self.persist_discogs_match(&transaction, &match_record, &candidate_records)?;
+                transaction.execute(
+                    "UPDATE tracks SET discogs_payload = NULL WHERE id = :track_id;",
+                    rusqlite::named_params! { ":track_id": &track_id },
+                )?;
+            }
+        }
+
+        transaction.commit()?;
+        Ok(())
+    }
+
     fn ensure_track(&self, track_id: &str) -> Result<(), LibraryError> {
         self.connection.execute(
             "INSERT OR IGNORE INTO tracks (id) VALUES (?1);",
             params![track_id],
-        )?;
-        Ok(())
-    }
-
-    fn update_discogs_payload(&self, track_id: &str, payload: &Value) -> Result<(), LibraryError> {
-        self.ensure_track(track_id)?;
-        let payload = Some(serde_json::to_string(payload)?);
-        self.connection.execute(
-            r#"
-            UPDATE tracks
-            SET discogs_payload = :payload,
-                updated_at = datetime('now')
-            WHERE id = :track_id;
-            "#,
-            rusqlite::named_params! {
-                ":track_id": track_id,
-                ":payload": payload,
-            },
         )?;
         Ok(())
     }
@@ -513,6 +852,22 @@ fn resolve_database_path(app: &AppHandle) -> Result<PathBuf, LibraryError> {
         .app_data_dir()
         .ok_or(LibraryError::AppDataDirUnavailable)?;
     Ok(base)
+}
+
+fn extract_release_id(value: &Value) -> Option<String> {
+    let id_value = value
+        .get("id")
+        .or_else(|| value.get("release_id"))
+        .or_else(|| value.get("master_id"));
+
+    match id_value {
+        Some(Value::String(id)) => Some(id.clone()),
+        Some(Value::Number(number)) => number
+            .as_u64()
+            .map(|value| value.to_string())
+            .or_else(|| number.as_i64().map(|value| value.to_string())),
+        _ => None,
+    }
 }
 
 impl From<bool> for i64 {
