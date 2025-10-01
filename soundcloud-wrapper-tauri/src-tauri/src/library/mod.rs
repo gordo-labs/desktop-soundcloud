@@ -251,6 +251,50 @@ impl LibraryStore {
         Ok(())
     }
 
+    pub fn record_discogs_success(
+        &self,
+        track_id: &str,
+        query: &str,
+        release: &Value,
+        confidence: f32,
+    ) -> Result<(), LibraryError> {
+        let payload = json!({
+            "status": "success",
+            "query": query,
+            "confidence": confidence,
+            "release": release,
+        });
+        self.update_discogs_payload(track_id, &payload)
+    }
+
+    pub fn record_discogs_ambiguity(
+        &self,
+        track_id: &str,
+        query: &str,
+        candidates: &[Value],
+    ) -> Result<(), LibraryError> {
+        let payload = json!({
+            "status": "ambiguous",
+            "query": query,
+            "candidates": candidates,
+        });
+        self.update_discogs_payload(track_id, &payload)
+    }
+
+    pub fn record_discogs_failure(
+        &self,
+        track_id: &str,
+        query: &str,
+        reason: &str,
+    ) -> Result<(), LibraryError> {
+        let payload = json!({
+            "status": "error",
+            "query": query,
+            "reason": reason,
+        });
+        self.update_discogs_payload(track_id, &payload)
+    }
+
     pub fn record_local_asset(&self, record: &LocalAssetRecord) -> Result<(), LibraryError> {
         self.ensure_track(&record.track_id)?;
         self.connection.execute(
@@ -440,6 +484,24 @@ impl LibraryStore {
         self.connection.execute(
             "INSERT OR IGNORE INTO tracks (id) VALUES (?1);",
             params![track_id],
+        )?;
+        Ok(())
+    }
+
+    fn update_discogs_payload(&self, track_id: &str, payload: &Value) -> Result<(), LibraryError> {
+        self.ensure_track(track_id)?;
+        let payload = Some(serde_json::to_string(payload)?);
+        self.connection.execute(
+            r#"
+            UPDATE tracks
+            SET discogs_payload = :payload,
+                updated_at = datetime('now')
+            WHERE id = :track_id;
+            "#,
+            rusqlite::named_params! {
+                ":track_id": track_id,
+                ":payload": payload,
+            },
         )?;
         Ok(())
     }

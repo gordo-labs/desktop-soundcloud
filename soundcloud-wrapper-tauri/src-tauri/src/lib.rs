@@ -1,3 +1,4 @@
+mod discogs;
 mod library;
 mod media;
 mod rekordbox;
@@ -9,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use discogs::DiscogsService;
 use library::{LibraryStore, LocalAssetRecord, SoundcloudSourceRecord, TrackRecord};
 use media::{MediaCache, MediaIntegration, MediaUpdate, MediaUpdatePayload, ThemeChangePayload};
 use rekordbox::{load_tracks, supports_auto_refresh};
@@ -42,6 +44,7 @@ const LIBRARY_REFRESH_LIKES_EVENT: &str = "app://library/likes/refresh";
 struct AppState {
     media: Mutex<MediaManager>,
     library: Arc<Mutex<LibraryStore>>,
+    discogs: DiscogsService,
     rekordbox: Mutex<RekordboxState>,
 }
 
@@ -62,7 +65,7 @@ struct RekordboxWatcher {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SoundcloudTrackPayload {
+pub(crate) struct SoundcloudTrackPayload {
     track_id: String,
     soundcloud_id: String,
     #[serde(default)]
@@ -116,12 +119,16 @@ impl AppState {
     fn new(app: &AppHandle) -> Result<Self, library::LibraryError> {
         let library = LibraryStore::initialize(app)?;
 
+        let library = Arc::new(Mutex::new(library));
+        let discogs = DiscogsService::new(app, Arc::clone(&library));
+
         Ok(Self {
             media: Mutex::new(MediaManager {
                 integration: MediaIntegration::initialize(app),
                 cache: MediaCache::default(),
             }),
-            library: Arc::new(Mutex::new(library)),
+            library,
+            discogs,
             rekordbox: Mutex::new(RekordboxState::default()),
         })
     }
@@ -481,6 +488,8 @@ pub fn run() {
                             eprintln!(
                                 "[soundcloud-wrapper] failed to persist SoundCloud like update: {error}"
                             );
+                        } else {
+                            state.discogs.queue_lookup(payload);
                         }
                     }
                 }
@@ -521,6 +530,8 @@ pub fn run() {
                                 eprintln!(
                                     "[soundcloud-wrapper] failed to persist SoundCloud playlist update: {error}"
                                 );
+                            } else {
+                                state.discogs.queue_lookup(track);
                             }
                         }
                     }
