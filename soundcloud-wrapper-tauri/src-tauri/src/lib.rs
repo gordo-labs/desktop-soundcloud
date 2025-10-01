@@ -1,13 +1,19 @@
 mod library;
 mod media;
+mod rekordbox;
 
 use std::error::Error;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use library::{LibraryStore, LocalAssetRecord, SoundcloudSourceRecord, TrackRecord};
 use media::{MediaCache, MediaIntegration, MediaUpdate, MediaUpdatePayload, ThemeChangePayload};
+use rekordbox::{load_tracks, supports_auto_refresh};
 use serde_json::{self, Value};
+use tauri::async_runtime::{self, JoinHandle};
 use tauri::menu::MenuBuilder;
 use tauri::plugin::Builder as PluginBuilder;
 use tauri::tray::{MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent};
@@ -32,11 +38,22 @@ const TRAY_MENU_EXIT: &str = "tray://exit";
 struct AppState {
     media: Mutex<MediaManager>,
     library: Arc<Mutex<LibraryStore>>,
+    rekordbox: Mutex<RekordboxState>,
 }
 
 struct MediaManager {
     integration: MediaIntegration,
     cache: MediaCache,
+}
+
+#[derive(Default)]
+struct RekordboxState {
+    watcher: Option<RekordboxWatcher>,
+}
+
+struct RekordboxWatcher {
+    path: PathBuf,
+    handle: JoinHandle<()>,
 }
 
 impl AppState {
@@ -49,7 +66,94 @@ impl AppState {
                 cache: MediaCache::default(),
             }),
             library: Arc::new(Mutex::new(library)),
+            rekordbox: Mutex::new(RekordboxState::default()),
         })
+    }
+}
+
+impl RekordboxState {
+    fn configure(&mut self, path: PathBuf, store: Arc<Mutex<LibraryStore>>) {
+        if let Some(existing) = self.watcher.as_ref() {
+            if existing.path == path {
+                return;
+            }
+        }
+        self.watcher = Some(RekordboxWatcher::spawn(path, store));
+    }
+
+    fn disable(&mut self) {
+        self.watcher = None;
+    }
+}
+
+impl RekordboxWatcher {
+    fn spawn(path: PathBuf, store: Arc<Mutex<LibraryStore>>) -> Self {
+        let watch_path = path.clone();
+        let handle = async_runtime::spawn(async move {
+            let mut last_modified = fs::metadata(&watch_path)
+                .and_then(|meta| meta.modified())
+                .ok();
+
+            loop {
+                async_runtime::sleep(Duration::from_secs(30)).await;
+
+                let metadata = match fs::metadata(&watch_path) {
+                    Ok(metadata) => metadata,
+                    Err(error) => {
+                        eprintln!("failed to read rekordbox database metadata: {error}");
+                        continue;
+                    }
+                };
+
+                let modified = match metadata.modified() {
+                    Ok(modified) => modified,
+                    Err(error) => {
+                        eprintln!("failed to read rekordbox database modification time: {error}");
+                        continue;
+                    }
+                };
+
+                let changed = last_modified
+                    .map(|previous| modified > previous)
+                    .unwrap_or(true);
+
+                if changed {
+                    last_modified = Some(modified);
+                    let import_path = watch_path.clone();
+                    match async_runtime::spawn_blocking(move || load_tracks(&import_path)).await {
+                        Ok(Ok(tracks)) => {
+                            let mut guard = match store.lock() {
+                                Ok(guard) => guard,
+                                Err(_) => {
+                                    eprintln!(
+                                        "failed to acquire library store lock during rekordbox refresh"
+                                    );
+                                    continue;
+                                }
+                            };
+
+                            if let Err(error) = guard.sync_rekordbox_tracks(&tracks) {
+                                eprintln!("failed to persist rekordbox refresh: {error}");
+                            }
+                        }
+                        Ok(Err(error)) => {
+                            eprintln!("failed to refresh rekordbox library: {error}");
+                        }
+                        Err(error) => {
+                            eprintln!("failed to join rekordbox refresh task: {error}");
+                        }
+                    }
+                }
+            }
+        });
+
+        Self { path, handle }
+    }
+}
+
+impl Drop for RekordboxWatcher {
+    fn drop(&mut self) {
+        self.handle.abort();
     }
 }
 
@@ -136,6 +240,42 @@ fn list_missing_assets(state: tauri::State<AppState>) -> Result<Vec<String>, Str
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+async fn import_rekordbox_library(
+    state: tauri::State<'_, AppState>,
+    db_path: String,
+) -> Result<(), String> {
+    let source_path = PathBuf::from(db_path);
+    let import_path = source_path.clone();
+    let tracks = async_runtime::spawn_blocking(move || load_tracks(&import_path))
+        .await
+        .map_err(|error| format!("failed to join rekordbox import task: {error}"))?
+        .map_err(|error| error.to_string())?;
+
+    {
+        let mut library = state
+            .library
+            .lock()
+            .map_err(|_| "library store lock poisoned".to_string())?;
+        library
+            .sync_rekordbox_tracks(&tracks)
+            .map_err(|error| error.to_string())?;
+    }
+
+    let mut rekordbox_state = state
+        .rekordbox
+        .lock()
+        .map_err(|_| "rekordbox state lock poisoned".to_string())?;
+
+    if supports_auto_refresh(&source_path) {
+        rekordbox_state.configure(source_path, state.library.clone());
+    } else {
+        rekordbox_state.disable();
+    }
+
+    Ok(())
+}
+
 fn register_media_shortcuts(app: &AppHandle) -> Result<(), tauri_plugin_global_shortcut::Error> {
     let shortcut_manager = app.global_shortcut();
 
@@ -212,7 +352,8 @@ pub fn run() {
             upsert_track,
             link_soundcloud_source,
             record_local_asset,
-            list_missing_assets
+            list_missing_assets,
+            import_rekordbox_library
         ])
         .setup(|app| {
             register_media_shortcuts(&app.handle())

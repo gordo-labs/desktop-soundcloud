@@ -30,6 +30,17 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 url = "2"
 rusqlite = { version = "0.30", features = ["bundled"] }
+quick-xml = { version = "0.30", features = ["serialize"] }
+sha2 = "0.10"
+symphonia = { version = "0.5", default-features = false, features = [
+    "aac",
+    "alac",
+    "flac",
+    "isomp4",
+    "mp3",
+    "vorbis",
+    "wav",
+] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 glib = { version = "0.15", features = ["v2_58"], optional = true }
