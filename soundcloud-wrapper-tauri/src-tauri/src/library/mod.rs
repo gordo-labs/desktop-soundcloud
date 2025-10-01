@@ -1,11 +1,13 @@
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 use std::fs;
 use std::path::PathBuf;
 
-use rusqlite::{params, Connection};
+use crate::rekordbox::RekordboxTrack;
+use rusqlite::{params, Connection, ErrorCode};
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use tauri::AppHandle;
 
 #[derive(Debug)]
@@ -93,6 +95,8 @@ pub struct LocalAssetRecord {
     #[serde(default = "default_available")]
     pub available: bool,
     #[serde(default)]
+    pub duration_ms: Option<i64>,
+    #[serde(default)]
     pub rekordbox_cues: Option<Value>,
 }
 
@@ -152,11 +156,30 @@ impl LibraryStore {
                 location TEXT NOT NULL,
                 checksum TEXT,
                 available INTEGER NOT NULL DEFAULT 1,
+                duration_ms INTEGER,
                 recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY(track_id) REFERENCES tracks(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS rekordbox_mappings (
+                rekordbox_id TEXT PRIMARY KEY,
+                track_id TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY(track_id) REFERENCES tracks(id) ON DELETE CASCADE
             );
             "#,
         )?;
+
+        if let Err(error) = self.connection.execute(
+            "ALTER TABLE local_assets ADD COLUMN duration_ms INTEGER;",
+            [],
+        ) {
+            match error {
+                rusqlite::Error::SqliteFailure(ref failure, _)
+                    if failure.code == ErrorCode::DuplicateColumnName => {}
+                _ => return Err(error.into()),
+            }
+        }
         Ok(())
     }
 
@@ -222,12 +245,13 @@ impl LibraryStore {
         self.ensure_track(&record.track_id)?;
         self.connection.execute(
             r#"
-            INSERT INTO local_assets (track_id, location, checksum, available)
-            VALUES (:track_id, :location, :checksum, :available)
+            INSERT INTO local_assets (track_id, location, checksum, available, duration_ms)
+            VALUES (:track_id, :location, :checksum, :available, :duration_ms)
             ON CONFLICT(track_id) DO UPDATE SET
                 location = excluded.location,
                 checksum = excluded.checksum,
                 available = excluded.available,
+                duration_ms = excluded.duration_ms,
                 recorded_at = datetime('now');
             "#,
             rusqlite::named_params! {
@@ -235,6 +259,7 @@ impl LibraryStore {
                 ":location": record.location,
                 ":checksum": record.checksum,
                 ":available": i64::from(record.available),
+                ":duration_ms": record.duration_ms,
             },
         )?;
 
@@ -255,6 +280,130 @@ impl LibraryStore {
             )?;
         }
 
+        Ok(())
+    }
+
+    pub fn sync_rekordbox_tracks(&self, tracks: &[RekordboxTrack]) -> Result<(), LibraryError> {
+        let transaction = self.connection.transaction()?;
+
+        let mut existing_statement =
+            transaction.prepare("SELECT rekordbox_id, track_id FROM rekordbox_mappings")?;
+        let existing_rows = existing_statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+
+        let mut existing_map: HashMap<String, String> = HashMap::new();
+        for row in existing_rows {
+            let (rekordbox_id, track_id) = row?;
+            existing_map.insert(rekordbox_id, track_id);
+        }
+        let mut stale_map = existing_map.clone();
+
+        for track in tracks {
+            let track_id = existing_map
+                .get(&track.rekordbox_id)
+                .cloned()
+                .unwrap_or_else(|| format!("rekordbox:{}", track.rekordbox_id));
+            existing_map.insert(track.rekordbox_id.clone(), track_id.clone());
+            stale_map.remove(&track.rekordbox_id);
+
+            transaction.execute(
+                r#"
+                INSERT INTO tracks (id, title, artist, album)
+                VALUES (:id, :title, :artist, :album)
+                ON CONFLICT(id) DO UPDATE SET
+                    title = excluded.title,
+                    artist = excluded.artist,
+                    album = excluded.album,
+                    updated_at = datetime('now');
+                "#,
+                rusqlite::named_params! {
+                    ":id": &track_id,
+                    ":title": track.title.as_ref(),
+                    ":artist": track.artist.as_ref(),
+                    ":album": track.album.as_ref(),
+                },
+            )?;
+
+            transaction.execute(
+                r#"
+                INSERT INTO rekordbox_mappings (rekordbox_id, track_id)
+                VALUES (:rekordbox_id, :track_id)
+                ON CONFLICT(rekordbox_id) DO UPDATE SET
+                    track_id = excluded.track_id,
+                    updated_at = datetime('now');
+                "#,
+                rusqlite::named_params! {
+                    ":rekordbox_id": &track.rekordbox_id,
+                    ":track_id": &track_id,
+                },
+            )?;
+
+            if let Some(location) = track.location.clone().or_else(|| {
+                track
+                    .normalized_path
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned())
+            }) {
+                transaction.execute(
+                    r#"
+                    INSERT INTO local_assets (track_id, location, checksum, available, duration_ms)
+                    VALUES (:track_id, :location, :checksum, :available, :duration_ms)
+                    ON CONFLICT(track_id) DO UPDATE SET
+                        location = excluded.location,
+                        checksum = excluded.checksum,
+                        available = excluded.available,
+                        duration_ms = excluded.duration_ms,
+                        recorded_at = datetime('now');
+                    "#,
+                    rusqlite::named_params! {
+                        ":track_id": &track_id,
+                        ":location": location,
+                        ":checksum": track.checksum.as_ref(),
+                        ":available": i64::from(track.available),
+                        ":duration_ms": track.duration_ms.map(|value| value as i64),
+                    },
+                )?;
+            }
+
+            let raw_payload = serde_json::to_string(&json!({
+                "rekordbox_id": track.rekordbox_id,
+                "track_reference": track.track_reference,
+                "track_id": track_id,
+                "title": track.title,
+                "artist": track.artist,
+                "album": track.album,
+                "location": track.location,
+                "normalized_path": track.normalized_path,
+                "checksum": track.checksum,
+                "duration_ms": track.duration_ms,
+                "available": track.available,
+                "cues": track.cues,
+            }))?;
+
+            transaction.execute(
+                r#"
+                INSERT INTO rekordbox_sources (track_id, raw_payload)
+                VALUES (:track_id, :raw_payload)
+                ON CONFLICT(track_id) DO UPDATE SET
+                    raw_payload = excluded.raw_payload,
+                    updated_at = datetime('now');
+                "#,
+                rusqlite::named_params! {
+                    ":track_id": &track_id,
+                    ":raw_payload": raw_payload,
+                },
+            )?;
+        }
+
+        for (_rekordbox_id, track_id) in stale_map {
+            transaction.execute(
+                "DELETE FROM tracks WHERE id = :track_id;",
+                rusqlite::named_params! { ":track_id": track_id },
+            )?;
+        }
+
+        transaction.commit()?;
         Ok(())
     }
 
