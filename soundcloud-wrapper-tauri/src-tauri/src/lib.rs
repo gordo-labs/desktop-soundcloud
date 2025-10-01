@@ -12,6 +12,7 @@ use std::time::Duration;
 use library::{LibraryStore, LocalAssetRecord, SoundcloudSourceRecord, TrackRecord};
 use media::{MediaCache, MediaIntegration, MediaUpdate, MediaUpdatePayload, ThemeChangePayload};
 use rekordbox::{load_tracks, supports_auto_refresh};
+use serde::Deserialize;
 use serde_json::{self, Value};
 use tauri::async_runtime::{self, JoinHandle};
 use tauri::menu::MenuBuilder;
@@ -34,6 +35,9 @@ const TRAY_HOME_EVENT: &str = "app://tray/home";
 const TRAY_MENU_TOGGLE: &str = "tray://toggle";
 const TRAY_MENU_HOME: &str = "tray://home";
 const TRAY_MENU_EXIT: &str = "tray://exit";
+const LIBRARY_LIKE_EVENT: &str = "app://library/like-updated";
+const LIBRARY_PLAYLIST_EVENT: &str = "app://library/playlist-updated";
+const LIBRARY_REFRESH_LIKES_EVENT: &str = "app://library/likes/refresh";
 
 struct AppState {
     media: Mutex<MediaManager>,
@@ -54,6 +58,58 @@ struct RekordboxState {
 struct RekordboxWatcher {
     path: PathBuf,
     handle: JoinHandle<()>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SoundcloudTrackPayload {
+    track_id: String,
+    soundcloud_id: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    artist: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    permalink_url: Option<String>,
+    #[serde(default)]
+    artwork_url: Option<String>,
+    #[serde(default)]
+    duration_ms: Option<i64>,
+    #[serde(default)]
+    liked_at: Option<String>,
+    #[serde(default)]
+    playlist_id: Option<String>,
+    #[serde(default)]
+    playlist_position: Option<i64>,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    raw: Value,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SoundcloudPlaylistPayload {
+    playlist_id: String,
+    soundcloud_id: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    permalink_url: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    track_count: Option<u32>,
+    #[serde(default)]
+    updated_at: Option<String>,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    raw: Value,
+    #[serde(default)]
+    tracks: Vec<SoundcloudTrackPayload>,
 }
 
 impl AppState {
@@ -188,6 +244,12 @@ fn open_external(app: AppHandle, url: String) -> Result<(), String> {
         }
         scheme => Err(format!("unsupported scheme '{scheme}'")),
     }
+}
+
+#[tauri::command]
+fn refresh_soundcloud_likes(app: AppHandle) -> Result<(), String> {
+    app.emit_to(MAIN_WINDOW_LABEL, LIBRARY_REFRESH_LIKES_EVENT, ())
+        .map_err(|error| format!("failed to request SoundCloud likes refresh: {error}"))
 }
 
 #[tauri::command]
@@ -349,6 +411,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             open_external,
+            refresh_soundcloud_likes,
             upsert_track,
             link_soundcloud_source,
             record_local_asset,
@@ -381,6 +444,86 @@ pub fn run() {
             handle.listen_any(THEME_CHANGE_EVENT, move |event| {
                 if let Ok(payload) = serde_json::from_str::<ThemeChangePayload>(event.payload()) {
                     handle_theme_change(&theme_handle, payload);
+                }
+            });
+
+            let like_handle = handle.clone();
+            handle.listen_any(LIBRARY_LIKE_EVENT, move |event| {
+                if let Ok(payload) = serde_json::from_str::<SoundcloudTrackPayload>(event.payload()) {
+                    if let Some(state) = like_handle.try_state::<AppState>() {
+                        let store = match state.library.lock() {
+                            Ok(store) => store,
+                            Err(_) => {
+                                eprintln!(
+                                    "[soundcloud-wrapper] failed to acquire library store lock for like update"
+                                );
+                                return;
+                            }
+                        };
+
+                        let track_record = TrackRecord {
+                            track_id: payload.track_id.clone(),
+                            title: payload.title.clone(),
+                            artist: payload.artist.clone(),
+                            album: None,
+                            discogs_payload: None,
+                        };
+                        let source_record = SoundcloudSourceRecord {
+                            track_id: payload.track_id.clone(),
+                            soundcloud_id: payload.soundcloud_id.clone(),
+                            permalink_url: payload.permalink_url.clone(),
+                            raw_payload: payload.raw.clone(),
+                        };
+
+                        if let Err(error) =
+                            store.sync_soundcloud_track(&track_record, &source_record)
+                        {
+                            eprintln!(
+                                "[soundcloud-wrapper] failed to persist SoundCloud like update: {error}"
+                            );
+                        }
+                    }
+                }
+            });
+
+            let playlist_handle = handle.clone();
+            handle.listen_any(LIBRARY_PLAYLIST_EVENT, move |event| {
+                if let Ok(payload) = serde_json::from_str::<SoundcloudPlaylistPayload>(event.payload()) {
+                    if let Some(state) = playlist_handle.try_state::<AppState>() {
+                        let store = match state.library.lock() {
+                            Ok(store) => store,
+                            Err(_) => {
+                                eprintln!(
+                                    "[soundcloud-wrapper] failed to acquire library store lock for playlist update"
+                                );
+                                return;
+                            }
+                        };
+
+                        for track in payload.tracks.into_iter() {
+                            let track_record = TrackRecord {
+                                track_id: track.track_id.clone(),
+                                title: track.title.clone(),
+                                artist: track.artist.clone(),
+                                album: None,
+                                discogs_payload: None,
+                            };
+                            let source_record = SoundcloudSourceRecord {
+                                track_id: track.track_id.clone(),
+                                soundcloud_id: track.soundcloud_id.clone(),
+                                permalink_url: track.permalink_url.clone(),
+                                raw_payload: track.raw.clone(),
+                            };
+
+                            if let Err(error) =
+                                store.sync_soundcloud_track(&track_record, &source_record)
+                            {
+                                eprintln!(
+                                    "[soundcloud-wrapper] failed to persist SoundCloud playlist update: {error}"
+                                );
+                            }
+                        }
+                    }
                 }
             });
 
