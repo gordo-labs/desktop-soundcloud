@@ -13,8 +13,9 @@ use std::time::Duration;
 
 use discogs::DiscogsService;
 use library::{
-    LibraryStatusPage, LibraryStore, LocalAssetRecord, SoundcloudLookupRecord,
-    SoundcloudSourceRecord, StatusFilter, TrackRecord,
+    DiscogsCandidateRecord, LibraryStatusPage, LibraryStore, LocalAssetRecord,
+    MusicbrainzCandidateRecord, SoundcloudLookupRecord, SoundcloudSourceRecord, StatusFilter,
+    TrackRecord,
 };
 use media::{MediaCache, MediaIntegration, MediaUpdate, MediaUpdatePayload, ThemeChangePayload};
 use musicbrainz::MusicbrainzService;
@@ -475,6 +476,34 @@ fn list_library_status(
 }
 
 #[tauri::command]
+fn list_discogs_candidates(
+    state: tauri::State<AppState>,
+    track_id: String,
+) -> Result<Vec<DiscogsCandidateRecord>, String> {
+    let store = state
+        .library
+        .lock()
+        .map_err(|_| "library store lock poisoned".to_string())?;
+    store
+        .list_discogs_candidates(&track_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_musicbrainz_candidates(
+    state: tauri::State<AppState>,
+    track_id: String,
+) -> Result<Vec<MusicbrainzCandidateRecord>, String> {
+    let store = state
+        .library
+        .lock()
+        .map_err(|_| "library store lock poisoned".to_string())?;
+    store
+        .list_musicbrainz_candidates(&track_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn import_rekordbox_library(
     state: tauri::State<'_, AppState>,
     db_path: String,
@@ -586,6 +615,8 @@ pub fn run() {
             refresh_soundcloud_likes,
             retry_discogs_lookup,
             retry_musicbrainz_lookup,
+            list_discogs_candidates,
+            list_musicbrainz_candidates,
             confirm_musicbrainz_match,
             upsert_track,
             link_soundcloud_source,

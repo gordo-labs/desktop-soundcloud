@@ -118,7 +118,8 @@ pub struct DiscogsMatchRecord {
     pub checked_at: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DiscogsCandidateRecord {
     pub match_id: String,
     pub release_id: Option<String>,
@@ -154,7 +155,8 @@ pub struct MusicbrainzMatchRecord {
     pub checked_at: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MusicbrainzCandidateRecord {
     pub match_id: String,
     pub release_id: Option<String>,
@@ -226,6 +228,9 @@ pub struct LibraryStatusRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub discogs_message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub discogs_query: Option<String>,
+    pub discogs_candidate_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub musicbrainz_status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub musicbrainz_release_id: Option<String>,
@@ -235,6 +240,9 @@ pub struct LibraryStatusRow {
     pub musicbrainz_checked_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub musicbrainz_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub musicbrainz_query: Option<String>,
+    pub musicbrainz_candidate_count: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub soundcloud_permalink_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -614,6 +622,40 @@ impl LibraryStore {
             let raw_payload: Value = serde_json::from_str(&raw_payload)?;
 
             result.push(DiscogsCandidateRecord {
+                match_id,
+                release_id,
+                score: score.map(|value| value as f32),
+                raw_payload,
+            });
+        }
+
+        Ok(result)
+    }
+
+    pub fn list_musicbrainz_candidates(
+        &self,
+        track_id: &str,
+    ) -> Result<Vec<MusicbrainzCandidateRecord>, LibraryError> {
+        let mut statement = self.connection.prepare(
+            r#"
+            SELECT match_id, release_id, score, raw_payload
+            FROM musicbrainz_candidates
+            WHERE match_id = :match_id
+            ORDER BY score DESC;
+            "#,
+        )?;
+
+        let mut rows = statement.query(rusqlite::named_params! { ":match_id": track_id })?;
+        let mut result = Vec::new();
+
+        while let Some(row) = rows.next()? {
+            let match_id: String = row.get(0)?;
+            let release_id: Option<String> = row.get(1)?;
+            let score: Option<f64> = row.get(2)?;
+            let raw_payload: String = row.get(3)?;
+            let raw_payload: Value = serde_json::from_str(&raw_payload)?;
+
+            result.push(MusicbrainzCandidateRecord {
                 match_id,
                 release_id,
                 score: score.map(|value| value as f32),
@@ -1204,6 +1246,16 @@ impl LibraryStore {
             LEFT JOIN musicbrainz_matches mb ON mb.track_id = t.id
             LEFT JOIN local_assets la ON la.track_id = t.id
             LEFT JOIN rekordbox_sources rb ON rb.track_id = t.id
+            LEFT JOIN (
+                SELECT match_id, COUNT(*) AS candidate_count
+                FROM discogs_candidates
+                GROUP BY match_id
+            ) dmc ON dmc.match_id = t.id
+            LEFT JOIN (
+                SELECT match_id, COUNT(*) AS candidate_count
+                FROM musicbrainz_candidates
+                GROUP BY match_id
+            ) mbc ON mbc.match_id = t.id
         "#;
 
         let count_query = format!("SELECT COUNT(*) {from_clause} {where_clause};");
@@ -1227,11 +1279,15 @@ impl LibraryStore {
                 dm.confidence,
                 dm.checked_at,
                 dm.message,
+                dm.query,
+                COALESCE(dmc.candidate_count, 0) AS discogs_candidate_count,
                 mb.status,
                 mb.release_id,
                 mb.confidence,
                 mb.checked_at,
                 mb.message,
+                mb.query,
+                COALESCE(mbc.candidate_count, 0) AS musicbrainz_candidate_count,
                 ss.permalink_url,
                 json_extract(ss.raw_payload, '$.likedAt') AS liked_at,
                 la.location
@@ -1251,7 +1307,9 @@ impl LibraryStore {
         let mut result_rows = Vec::new();
         while let Some(row) = rows.next()? {
             let confidence: Option<f64> = row.get(11)?;
-            let musicbrainz_confidence: Option<f64> = row.get(16)?;
+            let musicbrainz_confidence: Option<f64> = row.get(18)?;
+            let discogs_candidate_count = row.get::<_, i64>(15)?;
+            let musicbrainz_candidate_count = row.get::<_, i64>(22)?;
 
             result_rows.push(LibraryStatusRow {
                 track_id: row.get(0)?,
@@ -1268,14 +1326,26 @@ impl LibraryStore {
                 discogs_confidence: confidence.map(|value| value as f32),
                 discogs_checked_at: row.get(12)?,
                 discogs_message: row.get(13)?,
-                musicbrainz_status: row.get(14)?,
-                musicbrainz_release_id: row.get(15)?,
+                discogs_query: row.get(14)?,
+                discogs_candidate_count: if discogs_candidate_count < 0 {
+                    0
+                } else {
+                    discogs_candidate_count as u32
+                },
+                musicbrainz_status: row.get(16)?,
+                musicbrainz_release_id: row.get(17)?,
                 musicbrainz_confidence: musicbrainz_confidence.map(|value| value as f32),
-                musicbrainz_checked_at: row.get(17)?,
-                musicbrainz_message: row.get(18)?,
-                soundcloud_permalink_url: row.get(19)?,
-                soundcloud_liked_at: row.get(20)?,
-                local_location: row.get(21)?,
+                musicbrainz_checked_at: row.get(19)?,
+                musicbrainz_message: row.get(20)?,
+                musicbrainz_query: row.get(21)?,
+                musicbrainz_candidate_count: if musicbrainz_candidate_count < 0 {
+                    0
+                } else {
+                    musicbrainz_candidate_count as u32
+                },
+                soundcloud_permalink_url: row.get(23)?,
+                soundcloud_liked_at: row.get(24)?,
+                local_location: row.get(25)?,
             });
         }
 
