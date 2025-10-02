@@ -1,4 +1,5 @@
-name: Build desktop bundles
+# Builds platform bundles after verifying npm tests, type checks, and cargo tests locally.
+name: Build desktop bundles (tests run before packaging)
 
 on:
   workflow_dispatch:
@@ -50,6 +51,17 @@ jobs:
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Prepare test cache directories
+        run: mkdir -p .cache/vitest
+
+      - name: Cache Vitest artifacts
+        uses: actions/cache@v4
+        with:
+          path: .cache/vitest
+          key: ${{ runner.os }}-vitest-${{ hashFiles('soundcloud-wrapper-tauri/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-vitest-
 
       - name: Cache cargo directories
         uses: actions/cache@v4

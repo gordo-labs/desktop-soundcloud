@@ -11,7 +11,14 @@ $projectRoot = Resolve-Path "$scriptDir/.."
 
 Push-Location $projectRoot
 
+$vitestCacheDir = Join-Path $projectRoot '.cache/vitest'
+New-Item -ItemType Directory -Path $vitestCacheDir -Force | Out-Null
+$env:VITEST_CACHE_DIR = $vitestCacheDir
+
 npm ci
+npm run test
+npm run build
+cargo test --workspace --manifest-path src-tauri/Cargo.toml
 cargo tauri build --bundles msi @args
 
 $bundleDir = Join-Path $projectRoot 'src-tauri/target/release/bundle/msi'
