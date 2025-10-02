@@ -646,10 +646,11 @@ pub fn run() {
             .build();
 
             // Listen to mode changes from the UI to show the correct pane
-            let app_handle = app.handle();
-            app.listen_global("ui://mode", move |event| {
-                let mode = event.payload().unwrap_or("");
-                let main = app_handle.get_webview_window("main");
+            let app_handle = app.handle().clone();
+            let app_handle_clone = app_handle.clone();
+            app_handle.listen("ui://mode", move |event| {
+                let mode = event.payload();
+                let main = app_handle_clone.get_webview_window("main");
                 let sidebar_width: i32 = 320; // pixels (match CSS grid sidebar)
                 if let Some(main_win) = &main {
                     if let (Ok(outer_pos), Ok(outer_size)) = (main_win.outer_position(), main_win.outer_size()) {
@@ -658,35 +659,36 @@ pub fn run() {
                         let new_w = if outer_size.width > sidebar_width as u32 { outer_size.width - sidebar_width as u32 } else { 600 };
                         let new_h = outer_size.height;
                         if mode.contains("soundcloud") {
-                            if let Some(sc) = app_handle.get_webview_window("soundcloud-bg") {
+                            if let Some(sc) = app_handle_clone.get_webview_window("soundcloud-bg") {
                                 let _ = sc.set_position(tauri::PhysicalPosition { x: new_x, y: new_y });
                                 let _ = sc.set_size(PhysicalSize { width: new_w, height: new_h });
                                 let _ = sc.set_always_on_top(true);
                                 let _ = sc.show();
-                                if let Some(bc) = app_handle.get_webview_window("bandcamp-bg") { let _ = bc.hide(); }
+                                if let Some(bc) = app_handle_clone.get_webview_window("bandcamp-bg") { let _ = bc.hide(); }
                             }
                         } else if mode.contains("bandcamp") {
-                            if let Some(bc) = app_handle.get_webview_window("bandcamp-bg") {
+                            if let Some(bc) = app_handle_clone.get_webview_window("bandcamp-bg") {
                                 let _ = bc.set_position(tauri::PhysicalPosition { x: new_x, y: new_y });
                                 let _ = bc.set_size(PhysicalSize { width: new_w, height: new_h });
                                 let _ = bc.set_always_on_top(true);
                                 let _ = bc.show();
-                                if let Some(sc) = app_handle.get_webview_window("soundcloud-bg") { let _ = sc.hide(); }
+                                if let Some(sc) = app_handle_clone.get_webview_window("soundcloud-bg") { let _ = sc.hide(); }
                             }
                         } else {
-                            if let Some(sc) = app_handle.get_webview_window("soundcloud-bg") { let _ = sc.hide(); }
-                            if let Some(bc) = app_handle.get_webview_window("bandcamp-bg") { let _ = bc.hide(); }
+                            if let Some(sc) = app_handle_clone.get_webview_window("soundcloud-bg") { let _ = sc.hide(); }
+                            if let Some(bc) = app_handle_clone.get_webview_window("bandcamp-bg") { let _ = bc.hide(); }
                         }
                     }
                 }
             });
 
             // Keep background webviews aligned when the main window moves or resizes
-            let app_handle2 = app.handle();
+            let app_handle2 = app.handle().clone();
             if let Some(main) = app.get_webview_window("main") {
+                let main_clone = main.clone();
                 let align = move || {
                     let sidebar_width: i32 = 320;
-                    if let (Ok(pos), Ok(size)) = (main.outer_position(), main.outer_size()) {
+                    if let (Ok(pos), Ok(size)) = (main_clone.outer_position(), main_clone.outer_size()) {
                         let x = pos.x + sidebar_width;
                         let y = pos.y;
                         let w = if size.width > sidebar_width as u32 { size.width - sidebar_width as u32 } else { 600 };
