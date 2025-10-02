@@ -23,6 +23,11 @@ type LibraryStatusRow = {
   discogsConfidence?: number | null;
   discogsCheckedAt?: string | null;
   discogsMessage?: string | null;
+  musicbrainzStatus?: string | null;
+  musicbrainzReleaseId?: string | null;
+  musicbrainzConfidence?: number | null;
+  musicbrainzCheckedAt?: string | null;
+  musicbrainzMessage?: string | null;
   soundcloudPermalinkUrl?: string | null;
   soundcloudLikedAt?: string | null;
   localLocation?: string | null;
