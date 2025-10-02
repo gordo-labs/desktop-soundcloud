@@ -126,6 +126,42 @@ pub struct DiscogsCandidateRecord {
     pub raw_payload: Value,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum MusicbrainzMatchStatus {
+    Success,
+    Ambiguous,
+    Error,
+}
+
+impl MusicbrainzMatchStatus {
+    fn as_str(&self) -> &'static str {
+        match self {
+            MusicbrainzMatchStatus::Success => "success",
+            MusicbrainzMatchStatus::Ambiguous => "ambiguous",
+            MusicbrainzMatchStatus::Error => "error",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MusicbrainzMatchRecord {
+    pub track_id: String,
+    pub release_id: Option<String>,
+    pub confidence: Option<f32>,
+    pub status: MusicbrainzMatchStatus,
+    pub query: Option<String>,
+    pub message: Option<String>,
+    pub checked_at: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MusicbrainzCandidateRecord {
+    pub match_id: String,
+    pub release_id: Option<String>,
+    pub score: Option<f32>,
+    pub raw_payload: Value,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SoundcloudSourceRecord {
     pub track_id: String,
@@ -133,6 +169,16 @@ pub struct SoundcloudSourceRecord {
     #[serde(default)]
     pub permalink_url: Option<String>,
     pub raw_payload: Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct SoundcloudLookupRecord {
+    pub track_id: String,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub soundcloud_id: Option<String>,
+    pub permalink_url: Option<String>,
+    pub raw_payload: Option<Value>,
 }
 
 fn default_available() -> bool {
@@ -533,6 +579,17 @@ impl LibraryStore {
         Ok(())
     }
 
+    pub fn record_musicbrainz_match(
+        &self,
+        record: &MusicbrainzMatchRecord,
+        candidates: &[MusicbrainzCandidateRecord],
+    ) -> Result<(), LibraryError> {
+        let transaction = self.connection.transaction()?;
+        self.persist_musicbrainz_match(&transaction, record, candidates)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn list_discogs_candidates(
         &self,
         track_id: &str,
@@ -565,6 +622,40 @@ impl LibraryStore {
         }
 
         Ok(result)
+    }
+
+    pub fn load_soundcloud_lookup(
+        &self,
+        track_id: &str,
+    ) -> Result<Option<SoundcloudLookupRecord>, LibraryError> {
+        let mut statement = self.connection.prepare(
+            r#"
+            SELECT t.id, t.title, t.artist, ss.soundcloud_id, ss.permalink_url, ss.raw_payload
+            FROM tracks t
+            LEFT JOIN soundcloud_sources ss ON ss.track_id = t.id
+            WHERE t.id = :track_id;
+            "#,
+        )?;
+
+        let mut rows = statement.query(rusqlite::named_params! { ":track_id": track_id })?;
+        if let Some(row) = rows.next()? {
+            let raw_payload: Option<String> = row.get(5)?;
+            let raw_payload = match raw_payload {
+                Some(payload) => Some(serde_json::from_str(&payload)?),
+                None => None,
+            };
+
+            Ok(Some(SoundcloudLookupRecord {
+                track_id: row.get(0)?,
+                title: row.get(1)?,
+                artist: row.get(2)?,
+                soundcloud_id: row.get(3)?,
+                permalink_url: row.get(4)?,
+                raw_payload,
+            }))
+        } else {
+            Ok(None)
+        }
     }
 
     fn persist_discogs_match(
@@ -634,6 +725,79 @@ impl LibraryStore {
                 "#,
                 rusqlite::named_params! {
                     ":match_id": &record.track_id,
+                    ":release_id": candidate.release_id.as_ref(),
+                    ":score": candidate.score.map(|value| value as f64),
+                    ":raw_payload": raw_payload,
+                },
+            )?;
+        }
+
+        Ok(())
+    }
+
+    fn persist_musicbrainz_match(
+        &self,
+        transaction: &rusqlite::Transaction<'_>,
+        record: &MusicbrainzMatchRecord,
+        candidates: &[MusicbrainzCandidateRecord],
+    ) -> Result<(), LibraryError> {
+        transaction.execute(
+            "INSERT OR IGNORE INTO tracks (id) VALUES (:track_id);",
+            rusqlite::named_params! { ":track_id": &record.track_id },
+        )?;
+
+        transaction.execute(
+            r#"
+            INSERT INTO musicbrainz_matches (track_id, release_id, confidence, status, query, message, checked_at)
+            VALUES (:track_id, :release_id, :confidence, :status, :query, :message, COALESCE(:checked_at, datetime('now')))
+            ON CONFLICT(track_id) DO UPDATE SET
+                release_id = excluded.release_id,
+                confidence = excluded.confidence,
+                status = excluded.status,
+                query = excluded.query,
+                message = excluded.message,
+                checked_at = excluded.checked_at;
+            "#,
+            rusqlite::named_params! {
+                ":track_id": &record.track_id,
+                ":release_id": record.release_id.as_ref(),
+                ":confidence": record.confidence.map(|value| value as f64),
+                ":status": record.status.as_str(),
+                ":query": record.query.as_ref(),
+                ":message": record.message.as_ref(),
+                ":checked_at": record.checked_at.as_deref(),
+            },
+        )?;
+
+        transaction.execute(
+            r#"
+            UPDATE tracks
+            SET musicbrainz_release_id = :release_id,
+                musicbrainz_confidence = :confidence,
+                updated_at = datetime('now')
+            WHERE id = :track_id;
+            "#,
+            rusqlite::named_params! {
+                ":track_id": &record.track_id,
+                ":release_id": record.release_id.as_ref(),
+                ":confidence": record.confidence.map(|value| value as f64),
+            },
+        )?;
+
+        transaction.execute(
+            "DELETE FROM musicbrainz_candidates WHERE match_id = :match_id;",
+            rusqlite::named_params! { ":match_id": &record.track_id },
+        )?;
+
+        for candidate in candidates {
+            let raw_payload = serde_json::to_string(&candidate.raw_payload)?;
+            transaction.execute(
+                r#"
+                INSERT INTO musicbrainz_candidates (match_id, release_id, score, raw_payload)
+                VALUES (:match_id, :release_id, :score, :raw_payload);
+                "#,
+                rusqlite::named_params! {
+                    ":match_id": &candidate.match_id,
                     ":release_id": candidate.release_id.as_ref(),
                     ":score": candidate.score.map(|value| value as f64),
                     ":raw_payload": raw_payload,
@@ -730,6 +894,88 @@ impl LibraryStore {
         };
 
         self.record_discogs_match(&record, &[])
+    }
+
+    pub fn record_musicbrainz_success(
+        &self,
+        track_id: &str,
+        query: &str,
+        release: &Value,
+        confidence: f32,
+    ) -> Result<(), LibraryError> {
+        let release_id = extract_release_id(release);
+        let candidate = MusicbrainzCandidateRecord {
+            match_id: track_id.to_string(),
+            release_id: release_id.clone(),
+            score: Some(confidence),
+            raw_payload: release.clone(),
+        };
+        let record = MusicbrainzMatchRecord {
+            track_id: track_id.to_string(),
+            release_id,
+            confidence: Some(confidence),
+            status: MusicbrainzMatchStatus::Success,
+            query: Some(query.to_string()),
+            message: None,
+            checked_at: None,
+        };
+
+        self.record_musicbrainz_match(&record, &[candidate])
+    }
+
+    pub fn record_musicbrainz_ambiguity(
+        &self,
+        track_id: &str,
+        query: &str,
+        candidates: &[Value],
+    ) -> Result<(), LibraryError> {
+        let candidate_records = candidates
+            .iter()
+            .filter_map(|candidate| {
+                let release_id = extract_release_id(candidate);
+                let raw_payload = candidate.clone();
+                release_id.map(|release_id| MusicbrainzCandidateRecord {
+                    match_id: track_id.to_string(),
+                    release_id: Some(release_id),
+                    score: candidate
+                        .get("score")
+                        .and_then(|value| value.as_f64())
+                        .map(|value| value as f32),
+                    raw_payload,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let record = MusicbrainzMatchRecord {
+            track_id: track_id.to_string(),
+            release_id: None,
+            confidence: None,
+            status: MusicbrainzMatchStatus::Ambiguous,
+            query: Some(query.to_string()),
+            message: None,
+            checked_at: None,
+        };
+
+        self.record_musicbrainz_match(&record, &candidate_records)
+    }
+
+    pub fn record_musicbrainz_failure(
+        &self,
+        track_id: &str,
+        query: &str,
+        reason: &str,
+    ) -> Result<(), LibraryError> {
+        let record = MusicbrainzMatchRecord {
+            track_id: track_id.to_string(),
+            release_id: None,
+            confidence: None,
+            status: MusicbrainzMatchStatus::Error,
+            query: Some(query.to_string()),
+            message: Some(reason.to_string()),
+            checked_at: None,
+        };
+
+        self.record_musicbrainz_match(&record, &[])
     }
 
     pub fn record_local_asset(&self, record: &LocalAssetRecord) -> Result<(), LibraryError> {

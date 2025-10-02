@@ -1,6 +1,7 @@
 mod discogs;
 mod library;
 mod media;
+mod musicbrainz;
 mod rekordbox;
 
 use std::error::Error;
@@ -12,10 +13,11 @@ use std::time::Duration;
 
 use discogs::DiscogsService;
 use library::{
-    LibraryStatusPage, LibraryStore, LocalAssetRecord, SoundcloudSourceRecord, StatusFilter,
-    TrackRecord,
+    LibraryStatusPage, LibraryStore, LocalAssetRecord, SoundcloudLookupRecord,
+    SoundcloudSourceRecord, StatusFilter, TrackRecord,
 };
 use media::{MediaCache, MediaIntegration, MediaUpdate, MediaUpdatePayload, ThemeChangePayload};
+use musicbrainz::MusicbrainzService;
 use rekordbox::{load_tracks, supports_auto_refresh};
 use serde::Deserialize;
 use serde_json::{self, Value};
@@ -48,6 +50,7 @@ struct AppState {
     media: Mutex<MediaManager>,
     library: Arc<Mutex<LibraryStore>>,
     discogs: DiscogsService,
+    musicbrainz: MusicbrainzService,
     rekordbox: Mutex<RekordboxState>,
 }
 
@@ -124,6 +127,7 @@ impl AppState {
 
         let library = Arc::new(Mutex::new(library));
         let discogs = DiscogsService::new(app, Arc::clone(&library));
+        let musicbrainz = MusicbrainzService::new(app, Arc::clone(&library));
 
         Ok(Self {
             media: Mutex::new(MediaManager {
@@ -132,6 +136,7 @@ impl AppState {
             }),
             library,
             discogs,
+            musicbrainz,
             rekordbox: Mutex::new(RekordboxState::default()),
         })
     }
@@ -263,6 +268,47 @@ fn refresh_soundcloud_likes(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn retry_discogs_lookup(state: tauri::State<AppState>, track_id: String) -> Result<(), String> {
+    let payload = resolve_lookup_payload(&state, &track_id)?;
+    state.discogs.queue_lookup(payload);
+    Ok(())
+}
+
+#[tauri::command]
+fn retry_musicbrainz_lookup(state: tauri::State<AppState>, track_id: String) -> Result<(), String> {
+    let payload = resolve_lookup_payload(&state, &track_id)?;
+    state.musicbrainz.queue_lookup(payload);
+    Ok(())
+}
+
+#[tauri::command]
+fn confirm_musicbrainz_match(
+    state: tauri::State<AppState>,
+    track_id: String,
+    release: Value,
+    confidence: Option<f32>,
+    query: Option<String>,
+) -> Result<(), String> {
+    let query_value = query.unwrap_or_default();
+    let resolved_confidence = confidence
+        .or_else(|| {
+            release
+                .get("score")
+                .and_then(|value| value.as_f64())
+                .map(|value| value as f32)
+        })
+        .unwrap_or(100.0);
+
+    let store = state
+        .library
+        .lock()
+        .map_err(|_| "library store lock poisoned".to_string())?;
+    store
+        .record_musicbrainz_success(&track_id, &query_value, &release, resolved_confidence)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn upsert_track(state: tauri::State<AppState>, record: TrackRecord) -> Result<(), String> {
     let store = state
         .library
@@ -271,6 +317,107 @@ fn upsert_track(state: tauri::State<AppState>, record: TrackRecord) -> Result<()
     store
         .upsert_track(&record)
         .map_err(|error| error.to_string())
+}
+
+fn resolve_lookup_payload(
+    state: &AppState,
+    track_id: &str,
+) -> Result<SoundcloudTrackPayload, String> {
+    let snapshot = {
+        let store = state
+            .library
+            .lock()
+            .map_err(|_| "library store lock poisoned".to_string())?;
+        store
+            .load_soundcloud_lookup(track_id)
+            .map_err(|error| error.to_string())?
+    };
+
+    match snapshot {
+        Some(record) => Ok(build_lookup_payload(record)),
+        None => Err(format!("track '{track_id}' not found in library")),
+    }
+}
+
+fn build_lookup_payload(record: SoundcloudLookupRecord) -> SoundcloudTrackPayload {
+    let SoundcloudLookupRecord {
+        track_id,
+        title,
+        artist,
+        soundcloud_id,
+        permalink_url,
+        raw_payload,
+    } = record;
+
+    let raw_value = raw_payload.unwrap_or(Value::Null);
+    let tags = extract_lookup_tags(&raw_value);
+    let artwork_url = extract_first_string(&raw_value, &["artwork_url", "artworkUrl"]);
+    let duration_ms = raw_value
+        .get("duration")
+        .and_then(|value| value.as_i64())
+        .or_else(|| {
+            raw_value
+                .get("full_duration")
+                .and_then(|value| value.as_i64())
+        });
+    let liked_at = extract_first_string(&raw_value, &["liked_at", "likedAt"]);
+    let playlist_id = extract_first_string(&raw_value, &["playlist_id", "playlistId"]);
+    let playlist_position = raw_value
+        .get("playlist_position")
+        .or_else(|| raw_value.get("playlistPosition"))
+        .and_then(|value| value.as_i64());
+    let source = extract_first_string(&raw_value, &["source"]);
+
+    let resolved_soundcloud_id = soundcloud_id.unwrap_or_else(|| track_id.clone());
+
+    SoundcloudTrackPayload {
+        track_id,
+        soundcloud_id: resolved_soundcloud_id,
+        title,
+        artist,
+        tags,
+        permalink_url,
+        artwork_url,
+        duration_ms,
+        liked_at,
+        playlist_id,
+        playlist_position,
+        source,
+        raw: raw_value,
+    }
+}
+
+fn extract_lookup_tags(raw: &Value) -> Vec<String> {
+    let mut tags = Vec::new();
+    if let Some(tag_list) = raw.get("tag_list").and_then(|value| value.as_str()) {
+        for tag in tag_list.split_whitespace() {
+            let trimmed = tag.trim();
+            if !trimmed.is_empty() {
+                tags.push(trimmed.to_string());
+            }
+        }
+    }
+
+    if let Some(genre) = raw.get("genre").and_then(|value| value.as_str()) {
+        let trimmed = genre.trim();
+        if !trimmed.is_empty() && !tags.iter().any(|existing| existing == trimmed) {
+            tags.push(trimmed.to_string());
+        }
+    }
+
+    tags
+}
+
+fn extract_first_string(raw: &Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(value) = raw.get(key).and_then(|value| value.as_str()) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
 }
 
 #[tauri::command]
@@ -437,6 +584,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_external,
             refresh_soundcloud_likes,
+            retry_discogs_lookup,
+            retry_musicbrainz_lookup,
+            confirm_musicbrainz_match,
             upsert_track,
             link_soundcloud_source,
             record_local_asset,
@@ -512,6 +662,7 @@ pub fn run() {
                                 "[soundcloud-wrapper] failed to persist SoundCloud like update: {error}"
                             );
                         } else {
+                            state.musicbrainz.queue_lookup(payload.clone());
                             state.discogs.queue_lookup(payload);
                         }
                     }
@@ -558,6 +709,7 @@ pub fn run() {
                                     "[soundcloud-wrapper] failed to persist SoundCloud playlist update: {error}"
                                 );
                             } else {
+                                state.musicbrainz.queue_lookup(track.clone());
                                 state.discogs.queue_lookup(track);
                             }
                         }
