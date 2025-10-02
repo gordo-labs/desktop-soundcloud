@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use crate::rekordbox::RekordboxTrack;
 use rusqlite::{params, Connection, ErrorCode};
 use serde::Deserialize;
+use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
@@ -144,6 +145,75 @@ pub struct LocalAssetRecord {
     pub duration_ms: Option<i64>,
     #[serde(default)]
     pub rekordbox_cues: Option<Value>,
+}
+
+/// Describes a single row returned by [`LibraryStore::list_library_status`].
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryStatusRow {
+    pub track_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artist: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub album: Option<String>,
+    pub liked: bool,
+    pub matched: bool,
+    pub has_local_file: bool,
+    pub local_available: bool,
+    pub in_rekordbox: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discogs_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discogs_release_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discogs_confidence: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discogs_checked_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discogs_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub soundcloud_permalink_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub soundcloud_liked_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_location: Option<String>,
+}
+
+/// A paginated response produced by [`LibraryStore::list_library_status`].
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryStatusPage {
+    pub rows: Vec<LibraryStatusRow>,
+    pub total: u32,
+    pub limit: u32,
+    pub offset: u32,
+}
+
+/// Filtering and pagination options for [`LibraryStore::list_library_status`].
+///
+/// * `missing_assets_only` &mdash; return tracks that do not have an available
+///   local asset entry. This includes tracks that have never been downloaded or
+///   where the asset is marked as unavailable.
+/// * `unresolved_discogs_only` &mdash; return tracks where the Discogs
+///   integration has not produced a successful match.
+/// * `liked_only` &mdash; limit results to tracks that have a SoundCloud payload
+///   containing a `likedAt` timestamp.
+/// * `rekordbox_only` &mdash; limit results to tracks that currently have a
+///   Rekordbox source entry.
+/// * `limit` / `offset` &mdash; standard pagination controls applied to the
+///   ordered result set. The backend enforces sensible defaults to avoid
+///   fetching excessively large pages.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct StatusFilter {
+    pub missing_assets_only: bool,
+    pub unresolved_discogs_only: bool,
+    pub liked_only: bool,
+    pub rekordbox_only: bool,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
 }
 
 pub struct LibraryStore {
@@ -736,6 +806,120 @@ impl LibraryStore {
             result.push(row?);
         }
         Ok(result)
+    }
+
+    pub fn list_library_status(
+        &self,
+        filter: &StatusFilter,
+    ) -> Result<LibraryStatusPage, LibraryError> {
+        const DEFAULT_LIMIT: u32 = 100;
+        const MAX_LIMIT: u32 = 500;
+
+        let requested_limit = filter.limit.unwrap_or(DEFAULT_LIMIT);
+        let limit = requested_limit.max(1).min(MAX_LIMIT) as i64;
+        let offset_value = filter.offset.unwrap_or(0) as i64;
+
+        let liked_predicate = "json_extract(ss.raw_payload, '$.likedAt') IS NOT NULL";
+
+        let mut conditions: Vec<&'static str> = Vec::new();
+        if filter.missing_assets_only {
+            conditions.push("(la.track_id IS NULL OR la.available = 0)");
+        }
+        if filter.unresolved_discogs_only {
+            conditions
+                .push("(dm.track_id IS NULL OR dm.status != 'success' OR dm.release_id IS NULL)");
+        }
+        if filter.liked_only {
+            conditions.push(liked_predicate);
+        }
+        if filter.rekordbox_only {
+            conditions.push("rb.track_id IS NOT NULL");
+        }
+
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", conditions.join(" AND "))
+        };
+
+        let from_clause = r#"
+            FROM tracks t
+            LEFT JOIN soundcloud_sources ss ON ss.track_id = t.id
+            LEFT JOIN discogs_matches dm ON dm.track_id = t.id
+            LEFT JOIN local_assets la ON la.track_id = t.id
+            LEFT JOIN rekordbox_sources rb ON rb.track_id = t.id
+        "#;
+
+        let count_query = format!("SELECT COUNT(*) {from_clause} {where_clause};");
+        let mut count_statement = self.connection.prepare(&count_query)?;
+        let total: i64 = count_statement.query_row([], |row| row.get(0))?;
+
+        let select_query = format!(
+            r#"
+            SELECT
+                t.id,
+                t.title,
+                t.artist,
+                t.album,
+                CASE WHEN {liked_predicate} THEN 1 ELSE 0 END AS liked,
+                CASE WHEN dm.status = 'success' AND dm.release_id IS NOT NULL THEN 1 ELSE 0 END AS matched,
+                CASE WHEN la.track_id IS NOT NULL THEN 1 ELSE 0 END AS has_local,
+                CASE WHEN la.track_id IS NOT NULL AND la.available = 1 THEN 1 ELSE 0 END AS local_available,
+                CASE WHEN rb.track_id IS NOT NULL THEN 1 ELSE 0 END AS in_rekordbox,
+                dm.status,
+                dm.release_id,
+                dm.confidence,
+                dm.checked_at,
+                dm.message,
+                ss.permalink_url,
+                json_extract(ss.raw_payload, '$.likedAt') AS liked_at,
+                la.location
+            {from_clause}
+            {where_clause}
+            ORDER BY t.updated_at DESC, t.id ASC
+            LIMIT :limit OFFSET :offset;
+            "#
+        );
+
+        let mut statement = self.connection.prepare(&select_query)?;
+        let mut rows = statement.query(rusqlite::named_params! {
+            ":limit": limit,
+            ":offset": offset_value,
+        })?;
+
+        let mut result_rows = Vec::new();
+        while let Some(row) = rows.next()? {
+            let confidence: Option<f64> = row.get(11)?;
+
+            result_rows.push(LibraryStatusRow {
+                track_id: row.get(0)?,
+                title: row.get(1)?,
+                artist: row.get(2)?,
+                album: row.get(3)?,
+                liked: row.get::<_, i64>(4)? != 0,
+                matched: row.get::<_, i64>(5)? != 0,
+                has_local_file: row.get::<_, i64>(6)? != 0,
+                local_available: row.get::<_, i64>(7)? != 0,
+                in_rekordbox: row.get::<_, i64>(8)? != 0,
+                discogs_status: row.get(9)?,
+                discogs_release_id: row.get(10)?,
+                discogs_confidence: confidence.map(|value| value as f32),
+                discogs_checked_at: row.get(12)?,
+                discogs_message: row.get(13)?,
+                soundcloud_permalink_url: row.get(14)?,
+                soundcloud_liked_at: row.get(15)?,
+                local_location: row.get(16)?,
+            });
+        }
+
+        let total = if total <= 0 { 0 } else { total as u32 };
+
+        Ok(LibraryStatusPage {
+            rows: result_rows,
+            total,
+            limit: limit as u32,
+            offset: offset_value as u32,
+        })
     }
 
     fn migrate_discogs_payloads(&self) -> Result<(), LibraryError> {
