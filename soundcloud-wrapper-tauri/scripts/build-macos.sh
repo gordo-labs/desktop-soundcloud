@@ -8,6 +8,10 @@ export RUSTFLAGS="${RUSTFLAGS:-}"
 
 pushd "$PROJECT_ROOT" >/dev/null
 
+vitest_cache_dir="${PROJECT_ROOT}/.cache/vitest"
+mkdir -p "$vitest_cache_dir"
+export VITEST_CACHE_DIR="$vitest_cache_dir"
+
 if [[ -n "${APPLE_IDENTITY:-}" ]]; then
   export TAURI_SIGNING_IDENTITY="$APPLE_IDENTITY"
 fi
@@ -25,6 +29,9 @@ if [[ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ]]; then
 fi
 
 npm ci
+npm run test
+npm run build
+cargo test --workspace --manifest-path src-tauri/Cargo.toml
 cargo tauri build --bundles dmg "$@"
 
 popd >/dev/null

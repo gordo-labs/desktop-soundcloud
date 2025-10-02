@@ -6,7 +6,14 @@ PROJECT_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 
 pushd "$PROJECT_ROOT" >/dev/null
 
+vitest_cache_dir="${PROJECT_ROOT}/.cache/vitest"
+mkdir -p "$vitest_cache_dir"
+export VITEST_CACHE_DIR="$vitest_cache_dir"
+
 npm ci
+npm run test
+npm run build
+cargo test --workspace --manifest-path src-tauri/Cargo.toml
 cargo tauri build --bundles appimage deb rpm "$@"
 
 if [[ -n "${LINUX_SIGNING_KEY_ID:-}" ]]; then
