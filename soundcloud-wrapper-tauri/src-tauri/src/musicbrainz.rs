@@ -7,6 +7,7 @@ use reqwest::{Client, StatusCode};
 use serde_json::{json, Value};
 use tauri::async_runtime;
 use tauri::AppHandle;
+use tauri::Emitter;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
@@ -24,7 +25,7 @@ pub struct MusicbrainzService {
 
 impl MusicbrainzService {
     pub fn new(app: &AppHandle, library: Arc<Mutex<LibraryStore>>) -> Self {
-        let (sender, mut receiver) = mpsc::channel(32);
+        let (sender, mut receiver) = mpsc::channel::<SoundcloudTrackPayload>(32);
         let credentials = Arc::new(MusicbrainzCredentials::load(app));
         let client = Client::builder()
             .user_agent(credentials.user_agent.clone())
@@ -130,7 +131,7 @@ async fn process_job(
     let query = build_search_query(&payload);
 
     if query.trim().is_empty() {
-        if let Ok(store) = library.lock() {
+        if let Ok(mut store) = library.lock() {
             if let Err(error) =
                 store.record_musicbrainz_failure(&track_id, &query, "missing title or artist")
             {
@@ -145,7 +146,7 @@ async fn process_job(
             release,
             confidence,
         }) => {
-            if let Ok(store) = library.lock() {
+            if let Ok(mut store) = library.lock() {
                 if let Err(error) =
                     store.record_musicbrainz_success(&track_id, &query, &release, confidence)
                 {
@@ -156,7 +157,7 @@ async fn process_job(
             }
         }
         Ok(LookupResult::Ambiguous { candidates }) => {
-            if let Ok(store) = library.lock() {
+            if let Ok(mut store) = library.lock() {
                 if let Err(error) =
                     store.record_musicbrainz_ambiguity(&track_id, &query, &candidates)
                 {
@@ -166,7 +167,7 @@ async fn process_job(
                 }
             }
 
-            if let Err(error) = app.emit_all(
+            if let Err(error) = app.emit(
                 MUSICBRAINZ_AMBIGUITY_EVENT,
                 json!({
                     "trackId": track_id,
@@ -178,7 +179,7 @@ async fn process_job(
             }
         }
         Err(failure) => {
-            if let Ok(store) = library.lock() {
+            if let Ok(mut store) = library.lock() {
                 if let Err(error) =
                     store.record_musicbrainz_failure(&track_id, &query, &failure.into_message())
                 {

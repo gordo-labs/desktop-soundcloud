@@ -5,11 +5,11 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::rekordbox::RekordboxTrack;
-use rusqlite::{params, Connection, ErrorCode};
+use rusqlite::{params, Connection};
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{json, Value};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 #[derive(Debug)]
 pub enum LibraryError {
@@ -297,7 +297,7 @@ impl LibraryStore {
         database_path.push("library.sqlite3");
 
         let connection = Connection::open(database_path)?;
-        let store = Self { connection };
+        let mut store = Self { connection };
         store.apply_migrations()?;
         store.enable_foreign_keys()?;
         Ok(store)
@@ -308,7 +308,7 @@ impl LibraryStore {
         Ok(())
     }
 
-    fn apply_migrations(&self) -> Result<(), LibraryError> {
+    fn apply_migrations(&mut self) -> Result<(), LibraryError> {
         self.connection.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS tracks (
@@ -413,10 +413,8 @@ impl LibraryStore {
             "ALTER TABLE local_assets ADD COLUMN duration_ms INTEGER;",
             [],
         ) {
-            match error {
-                rusqlite::Error::SqliteFailure(ref failure, _)
-                    if failure.code == ErrorCode::DuplicateColumnName => {}
-                _ => return Err(error.into()),
+            if !is_duplicate_column_error(&error) {
+                return Err(error.into());
             }
         }
 
@@ -424,10 +422,8 @@ impl LibraryStore {
             .connection
             .execute("ALTER TABLE tracks ADD COLUMN discogs_release_id TEXT;", [])
         {
-            match error {
-                rusqlite::Error::SqliteFailure(ref failure, _)
-                    if failure.code == ErrorCode::DuplicateColumnName => {}
-                _ => return Err(error.into()),
+            if !is_duplicate_column_error(&error) {
+                return Err(error.into());
             }
         }
 
@@ -435,10 +431,8 @@ impl LibraryStore {
             .connection
             .execute("ALTER TABLE tracks ADD COLUMN discogs_confidence REAL;", [])
         {
-            match error {
-                rusqlite::Error::SqliteFailure(ref failure, _)
-                    if failure.code == ErrorCode::DuplicateColumnName => {}
-                _ => return Err(error.into()),
+            if !is_duplicate_column_error(&error) {
+                return Err(error.into());
             }
         }
 
@@ -446,10 +440,8 @@ impl LibraryStore {
             "ALTER TABLE tracks ADD COLUMN musicbrainz_payload TEXT;",
             [],
         ) {
-            match error {
-                rusqlite::Error::SqliteFailure(ref failure, _)
-                    if failure.code == ErrorCode::DuplicateColumnName => {}
-                _ => return Err(error.into()),
+            if !is_duplicate_column_error(&error) {
+                return Err(error.into());
             }
         }
 
@@ -457,10 +449,8 @@ impl LibraryStore {
             "ALTER TABLE tracks ADD COLUMN musicbrainz_release_id TEXT;",
             [],
         ) {
-            match error {
-                rusqlite::Error::SqliteFailure(ref failure, _)
-                    if failure.code == ErrorCode::DuplicateColumnName => {}
-                _ => return Err(error.into()),
+            if !is_duplicate_column_error(&error) {
+                return Err(error.into());
             }
         }
 
@@ -468,10 +458,8 @@ impl LibraryStore {
             "ALTER TABLE tracks ADD COLUMN musicbrainz_confidence REAL;",
             [],
         ) {
-            match error {
-                rusqlite::Error::SqliteFailure(ref failure, _)
-                    if failure.code == ErrorCode::DuplicateColumnName => {}
-                _ => return Err(error.into()),
+            if !is_duplicate_column_error(&error) {
+                return Err(error.into());
             }
         }
 
@@ -577,23 +565,23 @@ impl LibraryStore {
     }
 
     pub fn record_discogs_match(
-        &self,
+        &mut self,
         record: &DiscogsMatchRecord,
         candidates: &[DiscogsCandidateRecord],
     ) -> Result<(), LibraryError> {
         let transaction = self.connection.transaction()?;
-        self.persist_discogs_match(&transaction, record, candidates)?;
+        Self::persist_discogs_match(&transaction, record, candidates)?;
         transaction.commit()?;
         Ok(())
     }
 
     pub fn record_musicbrainz_match(
-        &self,
+        &mut self,
         record: &MusicbrainzMatchRecord,
         candidates: &[MusicbrainzCandidateRecord],
     ) -> Result<(), LibraryError> {
         let transaction = self.connection.transaction()?;
-        self.persist_musicbrainz_match(&transaction, record, candidates)?;
+        Self::persist_musicbrainz_match(&transaction, record, candidates)?;
         transaction.commit()?;
         Ok(())
     }
@@ -701,7 +689,6 @@ impl LibraryStore {
     }
 
     fn persist_discogs_match(
-        &self,
         transaction: &rusqlite::Transaction<'_>,
         record: &DiscogsMatchRecord,
         candidates: &[DiscogsCandidateRecord],
@@ -778,7 +765,6 @@ impl LibraryStore {
     }
 
     fn persist_musicbrainz_match(
-        &self,
         transaction: &rusqlite::Transaction<'_>,
         record: &MusicbrainzMatchRecord,
         candidates: &[MusicbrainzCandidateRecord],
@@ -851,7 +837,7 @@ impl LibraryStore {
     }
 
     pub fn record_discogs_success(
-        &self,
+        &mut self,
         track_id: &str,
         query: &str,
         release: &Value,
@@ -884,7 +870,7 @@ impl LibraryStore {
     }
 
     pub fn record_discogs_ambiguity(
-        &self,
+        &mut self,
         track_id: &str,
         query: &str,
         candidates: &[Value],
@@ -920,7 +906,7 @@ impl LibraryStore {
     }
 
     pub fn record_discogs_failure(
-        &self,
+        &mut self,
         track_id: &str,
         query: &str,
         reason: &str,
@@ -939,7 +925,7 @@ impl LibraryStore {
     }
 
     pub fn record_musicbrainz_success(
-        &self,
+        &mut self,
         track_id: &str,
         query: &str,
         release: &Value,
@@ -966,7 +952,7 @@ impl LibraryStore {
     }
 
     pub fn record_musicbrainz_ambiguity(
-        &self,
+        &mut self,
         track_id: &str,
         query: &str,
         candidates: &[Value],
@@ -1002,7 +988,7 @@ impl LibraryStore {
     }
 
     pub fn record_musicbrainz_failure(
-        &self,
+        &mut self,
         track_id: &str,
         query: &str,
         reason: &str,
@@ -1062,124 +1048,126 @@ impl LibraryStore {
         Ok(())
     }
 
-    pub fn sync_rekordbox_tracks(&self, tracks: &[RekordboxTrack]) -> Result<(), LibraryError> {
+    pub fn sync_rekordbox_tracks(&mut self, tracks: &[RekordboxTrack]) -> Result<(), LibraryError> {
         let transaction = self.connection.transaction()?;
 
-        let mut existing_statement =
-            transaction.prepare("SELECT rekordbox_id, track_id FROM rekordbox_mappings")?;
-        let existing_rows = existing_statement.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
+        {
+            let mut existing_statement =
+                transaction.prepare("SELECT rekordbox_id, track_id FROM rekordbox_mappings")?;
+            let existing_rows = existing_statement.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
 
-        let mut existing_map: HashMap<String, String> = HashMap::new();
-        for row in existing_rows {
-            let (rekordbox_id, track_id) = row?;
-            existing_map.insert(rekordbox_id, track_id);
-        }
-        let mut stale_map = existing_map.clone();
+            let mut existing_map: HashMap<String, String> = HashMap::new();
+            for row in existing_rows {
+                let (rekordbox_id, track_id) = row?;
+                existing_map.insert(rekordbox_id, track_id);
+            }
+            let mut stale_map = existing_map.clone();
 
-        for track in tracks {
-            let track_id = existing_map
-                .get(&track.rekordbox_id)
-                .cloned()
-                .unwrap_or_else(|| format!("rekordbox:{}", track.rekordbox_id));
-            existing_map.insert(track.rekordbox_id.clone(), track_id.clone());
-            stale_map.remove(&track.rekordbox_id);
+            for track in tracks {
+                let track_id = existing_map
+                    .get(&track.rekordbox_id)
+                    .cloned()
+                    .unwrap_or_else(|| format!("rekordbox:{}", track.rekordbox_id));
+                existing_map.insert(track.rekordbox_id.clone(), track_id.clone());
+                stale_map.remove(&track.rekordbox_id);
 
-            transaction.execute(
-                r#"
-                INSERT INTO tracks (id, title, artist, album)
-                VALUES (:id, :title, :artist, :album)
-                ON CONFLICT(id) DO UPDATE SET
-                    title = excluded.title,
-                    artist = excluded.artist,
-                    album = excluded.album,
-                    updated_at = datetime('now');
-                "#,
-                rusqlite::named_params! {
-                    ":id": &track_id,
-                    ":title": track.title.as_ref(),
-                    ":artist": track.artist.as_ref(),
-                    ":album": track.album.as_ref(),
-                },
-            )?;
-
-            transaction.execute(
-                r#"
-                INSERT INTO rekordbox_mappings (rekordbox_id, track_id)
-                VALUES (:rekordbox_id, :track_id)
-                ON CONFLICT(rekordbox_id) DO UPDATE SET
-                    track_id = excluded.track_id,
-                    updated_at = datetime('now');
-                "#,
-                rusqlite::named_params! {
-                    ":rekordbox_id": &track.rekordbox_id,
-                    ":track_id": &track_id,
-                },
-            )?;
-
-            if let Some(location) = track.location.clone().or_else(|| {
-                track
-                    .normalized_path
-                    .as_ref()
-                    .map(|path| path.to_string_lossy().into_owned())
-            }) {
                 transaction.execute(
                     r#"
-                    INSERT INTO local_assets (track_id, location, checksum, available, duration_ms)
-                    VALUES (:track_id, :location, :checksum, :available, :duration_ms)
+                    INSERT INTO tracks (id, title, artist, album)
+                    VALUES (:id, :title, :artist, :album)
+                    ON CONFLICT(id) DO UPDATE SET
+                        title = excluded.title,
+                        artist = excluded.artist,
+                        album = excluded.album,
+                        updated_at = datetime('now');
+                    "#,
+                    rusqlite::named_params! {
+                        ":id": &track_id,
+                        ":title": track.title.as_ref(),
+                        ":artist": track.artist.as_ref(),
+                        ":album": track.album.as_ref(),
+                    },
+                )?;
+
+                transaction.execute(
+                    r#"
+                    INSERT INTO rekordbox_mappings (rekordbox_id, track_id)
+                    VALUES (:rekordbox_id, :track_id)
+                    ON CONFLICT(rekordbox_id) DO UPDATE SET
+                        track_id = excluded.track_id,
+                        updated_at = datetime('now');
+                    "#,
+                    rusqlite::named_params! {
+                        ":rekordbox_id": &track.rekordbox_id,
+                        ":track_id": &track_id,
+                    },
+                )?;
+
+                if let Some(location) = track.location.clone().or_else(|| {
+                    track
+                        .normalized_path
+                        .as_ref()
+                        .map(|path| path.to_string_lossy().into_owned())
+                }) {
+                    transaction.execute(
+                        r#"
+                        INSERT INTO local_assets (track_id, location, checksum, available, duration_ms)
+                        VALUES (:track_id, :location, :checksum, :available, :duration_ms)
+                        ON CONFLICT(track_id) DO UPDATE SET
+                            location = excluded.location,
+                            checksum = excluded.checksum,
+                            available = excluded.available,
+                            duration_ms = excluded.duration_ms,
+                            recorded_at = datetime('now');
+                        "#,
+                        rusqlite::named_params! {
+                            ":track_id": &track_id,
+                            ":location": location,
+                            ":checksum": track.checksum.as_ref(),
+                            ":available": if track.available { 1 } else { 0 },
+                            ":duration_ms": track.duration_ms.map(|value| value as i64),
+                        },
+                    )?;
+                }
+
+                let raw_payload = serde_json::to_string(&json!({
+                    "rekordbox_id": track.rekordbox_id,
+                    "track_reference": track.track_reference,
+                    "track_id": track_id,
+                    "title": track.title,
+                    "artist": track.artist,
+                    "album": track.album,
+                    "location": track.location,
+                    "normalized_path": track.normalized_path,
+                    "checksum": track.checksum,
+                    "duration_ms": track.duration_ms,
+                    "available": track.available,
+                    "cues": track.cues,
+                }))?;
+
+                transaction.execute(
+                    r#"
+                    INSERT INTO rekordbox_sources (track_id, raw_payload)
+                    VALUES (:track_id, :raw_payload)
                     ON CONFLICT(track_id) DO UPDATE SET
-                        location = excluded.location,
-                        checksum = excluded.checksum,
-                        available = excluded.available,
-                        duration_ms = excluded.duration_ms,
-                        recorded_at = datetime('now');
+                        raw_payload = excluded.raw_payload,
+                        updated_at = datetime('now');
                     "#,
                     rusqlite::named_params! {
                         ":track_id": &track_id,
-                        ":location": location,
-                        ":checksum": track.checksum.as_ref(),
-                        ":available": i64::from(track.available),
-                        ":duration_ms": track.duration_ms.map(|value| value as i64),
+                        ":raw_payload": raw_payload,
                     },
                 )?;
             }
 
-            let raw_payload = serde_json::to_string(&json!({
-                "rekordbox_id": track.rekordbox_id,
-                "track_reference": track.track_reference,
-                "track_id": track_id,
-                "title": track.title,
-                "artist": track.artist,
-                "album": track.album,
-                "location": track.location,
-                "normalized_path": track.normalized_path,
-                "checksum": track.checksum,
-                "duration_ms": track.duration_ms,
-                "available": track.available,
-                "cues": track.cues,
-            }))?;
-
-            transaction.execute(
-                r#"
-                INSERT INTO rekordbox_sources (track_id, raw_payload)
-                VALUES (:track_id, :raw_payload)
-                ON CONFLICT(track_id) DO UPDATE SET
-                    raw_payload = excluded.raw_payload,
-                    updated_at = datetime('now');
-                "#,
-                rusqlite::named_params! {
-                    ":track_id": &track_id,
-                    ":raw_payload": raw_payload,
-                },
-            )?;
-        }
-
-        for (_rekordbox_id, track_id) in stale_map {
-            transaction.execute(
-                "DELETE FROM tracks WHERE id = :track_id;",
-                rusqlite::named_params! { ":track_id": track_id },
-            )?;
+            for (_rekordbox_id, track_id) in stale_map {
+                transaction.execute(
+                    "DELETE FROM tracks WHERE id = :track_id;",
+                    rusqlite::named_params! { ":track_id": track_id },
+                )?;
+            }
         }
 
         transaction.commit()?;
@@ -1359,7 +1347,7 @@ impl LibraryStore {
         })
     }
 
-    fn migrate_discogs_payloads(&self) -> Result<(), LibraryError> {
+    fn migrate_discogs_payloads(&mut self) -> Result<(), LibraryError> {
         let mut transaction = self.connection.transaction()?;
 
         {
@@ -1446,7 +1434,7 @@ impl LibraryStore {
                     checked_at: None,
                 };
 
-                self.persist_discogs_match(&transaction, &match_record, &candidate_records)?;
+                Self::persist_discogs_match(&transaction, &match_record, &candidate_records)?;
                 transaction.execute(
                     "UPDATE tracks SET discogs_payload = NULL WHERE id = :track_id;",
                     rusqlite::named_params! { ":track_id": &track_id },
@@ -1458,7 +1446,7 @@ impl LibraryStore {
         Ok(())
     }
 
-    fn migrate_musicbrainz_payloads(&self) -> Result<(), LibraryError> {
+    fn migrate_musicbrainz_payloads(&mut self) -> Result<(), LibraryError> {
         let mut transaction = self.connection.transaction()?;
 
         {
@@ -1625,10 +1613,10 @@ impl LibraryStore {
 }
 
 fn resolve_database_path(app: &AppHandle) -> Result<PathBuf, LibraryError> {
-    let resolver = app.path_resolver();
+    let resolver = app.path();
     let base = resolver
         .app_data_dir()
-        .ok_or(LibraryError::AppDataDirUnavailable)?;
+        .map_err(|_| LibraryError::AppDataDirUnavailable)?;
     Ok(base)
 }
 
@@ -1648,12 +1636,6 @@ fn extract_release_id(value: &Value) -> Option<String> {
     }
 }
 
-impl From<bool> for i64 {
-    fn from(value: bool) -> Self {
-        if value {
-            1
-        } else {
-            0
-        }
-    }
+fn is_duplicate_column_error(error: &rusqlite::Error) -> bool {
+    matches!(error, rusqlite::Error::SqliteFailure(_, _))
 }

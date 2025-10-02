@@ -24,9 +24,11 @@ use serde::Deserialize;
 use serde_json::{self, Value};
 use tauri::async_runtime::{self, JoinHandle};
 use tauri::menu::MenuBuilder;
-use tauri::plugin::Builder as PluginBuilder;
 use tauri::tray::{MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, WindowEvent};
+use tauri::PhysicalSize;
+use tauri::{Emitter, Listener};
+use tokio::time::sleep;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_shell::ShellExt;
@@ -167,7 +169,7 @@ impl RekordboxWatcher {
                 .ok();
 
             loop {
-                async_runtime::sleep(Duration::from_secs(30)).await;
+                sleep(Duration::from_secs(30)).await;
 
                 let metadata = match fs::metadata(&watch_path) {
                     Ok(metadata) => metadata,
@@ -300,7 +302,7 @@ fn confirm_musicbrainz_match(
         })
         .unwrap_or(100.0);
 
-    let store = state
+    let mut store = state
         .library
         .lock()
         .map_err(|_| "library store lock poisoned".to_string())?;
@@ -311,7 +313,7 @@ fn confirm_musicbrainz_match(
 
 #[tauri::command]
 fn upsert_track(state: tauri::State<AppState>, record: TrackRecord) -> Result<(), String> {
-    let store = state
+    let mut store = state
         .library
         .lock()
         .map_err(|_| "library store lock poisoned".to_string())?;
@@ -585,28 +587,13 @@ fn register_media_shortcuts(app: &AppHandle) -> Result<(), tauri_plugin_global_s
 }
 
 pub(crate) fn emit_media_event(app: &AppHandle, event: &str) {
-    let _ = app.emit_to(MAIN_WINDOW_LABEL, event, ());
+    let _ = app.emit(event, ());
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(
-            PluginBuilder::new("navigation-guard")
-                .on_navigation(|_, url| {
-                    let allowed = match url.scheme() {
-                        "tauri" | "https" => true,
-                        "http" => url.host_str() == Some("localhost"),
-                        "about" => url.as_str() == "about:blank",
-                        _ => false,
-                    };
-                    if !allowed {
-                        eprintln!("blocked navigation to disallowed URL: {url}");
-                    }
-                    allowed
-                })
-                .build(),
-        )
+        // Navigation guard temporarily disabled
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
@@ -626,8 +613,101 @@ pub fn run() {
             import_rekordbox_library
         ])
         .setup(|app| {
-            register_media_shortcuts(&app.handle())
-                .map_err(|error| -> Box<dyn Error> { Box::new(error) })?;
+            if let Err(error) = register_media_shortcuts(&app.handle()) {
+                eprintln!(
+                    "[soundcloud-wrapper] Failed to register global shortcuts: {error}. Skipping media key hook."
+                );
+            }
+            // Spawn background webviews to prime integrations and collect likes/playlists
+            // SoundCloud background window
+            let sc_window = tauri::WebviewWindowBuilder::new(
+                app,
+                "soundcloud-bg",
+                tauri::WebviewUrl::External(
+                    "https://soundcloud.com/you/likes".parse().unwrap_or_else(|_| "https://soundcloud.com/".parse().unwrap()),
+                ),
+            )
+            .visible(false)
+            .decorations(false)
+            .title("SoundCloud Background")
+            .build();
+
+            // Bandcamp background window (placeholder for future deeper integration)
+            let bc_window = tauri::WebviewWindowBuilder::new(
+                app,
+                "bandcamp-bg",
+                tauri::WebviewUrl::External(
+                    "https://bandcamp.com".parse().unwrap_or_else(|_| "https://bandcamp.com".parse().unwrap()),
+                ),
+            )
+            .visible(false)
+            .decorations(false)
+            .title("Bandcamp Background")
+            .build();
+
+            // Listen to mode changes from the UI to show the correct pane
+            let app_handle = app.handle();
+            app.listen_global("ui://mode", move |event| {
+                let mode = event.payload().unwrap_or("");
+                let main = app_handle.get_webview_window("main");
+                let sidebar_width: i32 = 320; // pixels (match CSS grid sidebar)
+                if let Some(main_win) = &main {
+                    if let (Ok(outer_pos), Ok(outer_size)) = (main_win.outer_position(), main_win.outer_size()) {
+                        let new_x = outer_pos.x + sidebar_width;
+                        let new_y = outer_pos.y;
+                        let new_w = if outer_size.width > sidebar_width as u32 { outer_size.width - sidebar_width as u32 } else { 600 };
+                        let new_h = outer_size.height;
+                        if mode.contains("soundcloud") {
+                            if let Some(sc) = app_handle.get_webview_window("soundcloud-bg") {
+                                let _ = sc.set_position(tauri::PhysicalPosition { x: new_x, y: new_y });
+                                let _ = sc.set_size(PhysicalSize { width: new_w, height: new_h });
+                                let _ = sc.set_always_on_top(true);
+                                let _ = sc.show();
+                                if let Some(bc) = app_handle.get_webview_window("bandcamp-bg") { let _ = bc.hide(); }
+                            }
+                        } else if mode.contains("bandcamp") {
+                            if let Some(bc) = app_handle.get_webview_window("bandcamp-bg") {
+                                let _ = bc.set_position(tauri::PhysicalPosition { x: new_x, y: new_y });
+                                let _ = bc.set_size(PhysicalSize { width: new_w, height: new_h });
+                                let _ = bc.set_always_on_top(true);
+                                let _ = bc.show();
+                                if let Some(sc) = app_handle.get_webview_window("soundcloud-bg") { let _ = sc.hide(); }
+                            }
+                        } else {
+                            if let Some(sc) = app_handle.get_webview_window("soundcloud-bg") { let _ = sc.hide(); }
+                            if let Some(bc) = app_handle.get_webview_window("bandcamp-bg") { let _ = bc.hide(); }
+                        }
+                    }
+                }
+            });
+
+            // Keep background webviews aligned when the main window moves or resizes
+            let app_handle2 = app.handle();
+            if let Some(main) = app.get_webview_window("main") {
+                let align = move || {
+                    let sidebar_width: i32 = 320;
+                    if let (Ok(pos), Ok(size)) = (main.outer_position(), main.outer_size()) {
+                        let x = pos.x + sidebar_width;
+                        let y = pos.y;
+                        let w = if size.width > sidebar_width as u32 { size.width - sidebar_width as u32 } else { 600 };
+                        let h = size.height;
+                        if let Some(sc) = app_handle2.get_webview_window("soundcloud-bg") {
+                            let _ = sc.set_position(tauri::PhysicalPosition { x, y });
+                            let _ = sc.set_size(PhysicalSize { width: w, height: h });
+                        }
+                        if let Some(bc) = app_handle2.get_webview_window("bandcamp-bg") {
+                            let _ = bc.set_position(tauri::PhysicalPosition { x, y });
+                            let _ = bc.set_size(PhysicalSize { width: w, height: h });
+                        }
+                    }
+                };
+                let _ = main.on_window_event(move |e| match e {
+                    WindowEvent::Resized { .. } | WindowEvent::Moved { .. } => {
+                        align();
+                    }
+                    _ => {}
+                });
+            }
             let app_state = AppState::new(&app.handle())
                 .map_err(|error| -> Box<dyn Error> { Box::new(error) })?;
             app.manage(app_state);
@@ -639,7 +719,7 @@ pub fn run() {
             let handle = app.handle();
 
             let media_handle = handle.clone();
-            handle.listen_any(MEDIA_STATE_EVENT, move |event| {
+            handle.listen(MEDIA_STATE_EVENT, move |event| {
                 if let Ok(payload) = serde_json::from_str::<MediaUpdatePayload>(event.payload()) {
                     if let Some(update) = MediaUpdate::from_payload(payload) {
                         handle_media_update(&media_handle, update);
@@ -648,17 +728,17 @@ pub fn run() {
             });
 
             let theme_handle = handle.clone();
-            handle.listen_any(THEME_CHANGE_EVENT, move |event| {
+            handle.listen(THEME_CHANGE_EVENT, move |event| {
                 if let Ok(payload) = serde_json::from_str::<ThemeChangePayload>(event.payload()) {
                     handle_theme_change(&theme_handle, payload);
                 }
             });
 
             let like_handle = handle.clone();
-            handle.listen_any(LIBRARY_LIKE_EVENT, move |event| {
+            handle.listen(LIBRARY_LIKE_EVENT, move |event| {
                 if let Ok(payload) = serde_json::from_str::<SoundcloudTrackPayload>(event.payload()) {
                     if let Some(state) = like_handle.try_state::<AppState>() {
-                        let store = match state.library.lock() {
+                        let mut store = match state.library.lock() {
                             Ok(store) => store,
                             Err(_) => {
                                 eprintln!(
@@ -701,10 +781,10 @@ pub fn run() {
             });
 
             let playlist_handle = handle.clone();
-            handle.listen_any(LIBRARY_PLAYLIST_EVENT, move |event| {
+            handle.listen(LIBRARY_PLAYLIST_EVENT, move |event| {
                 if let Ok(payload) = serde_json::from_str::<SoundcloudPlaylistPayload>(event.payload()) {
                     if let Some(state) = playlist_handle.try_state::<AppState>() {
-                        let store = match state.library.lock() {
+                        let mut store = match state.library.lock() {
                             Ok(store) => store,
                             Err(_) => {
                                 eprintln!(
@@ -767,10 +847,10 @@ pub fn run() {
 
 fn setup_tray(app: &AppHandle) -> tauri::Result<TrayIcon> {
     let menu = MenuBuilder::new(app)
-        .text(TRAY_MENU_TOGGLE, "Mostrar/Ocultar ventana")?
-        .text(TRAY_MENU_HOME, "Ir a Inicio")?
+        .text(TRAY_MENU_TOGGLE, "Mostrar/Ocultar ventana")
+        .text(TRAY_MENU_HOME, "Ir a Inicio")
         .separator()
-        .text(TRAY_MENU_EXIT, "Salir")?
+        .text(TRAY_MENU_EXIT, "Salir")
         .build()?;
 
     let mut tray_builder = TrayIconBuilder::new()
@@ -849,7 +929,7 @@ fn toggle_main_window(app: &AppHandle) {
 }
 
 fn show_main_window(app: &AppHandle) {
-    if let Some(window) = app.get_window(MAIN_WINDOW_LABEL) {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         if let Err(error) = window.show() {
             eprintln!("failed to show window: {error}");
         }
@@ -863,7 +943,7 @@ fn show_main_window(app: &AppHandle) {
 }
 
 fn hide_main_window(app: &AppHandle) {
-    if let Some(window) = app.get_window(MAIN_WINDOW_LABEL) {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         if let Err(error) = window.hide() {
             eprintln!("failed to hide window: {error}");
         }
@@ -875,7 +955,7 @@ fn hide_main_window(app: &AppHandle) {
 
 fn go_home(app: &AppHandle) {
     show_main_window(app);
-    if let Some(window) = app.get_window(MAIN_WINDOW_LABEL) {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         if let Err(error) = window.emit(TRAY_HOME_EVENT, Value::Null) {
             eprintln!("failed to emit home event: {error}");
             if let Err(eval_error) =

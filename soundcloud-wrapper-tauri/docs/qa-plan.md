@@ -1,49 +1,49 @@
-# QA plan: SoundCloud Wrapper
+# Plan de QA: SoundCloud Wrapper
 
-## General preparation
-- [ ] Verify that the build under test matches the final production configuration (permissions, allowed domains, signing if applicable).
-- [ ] Ensure the test environment has a stable internet connection and access to SoundCloud test accounts (at least one free account).
-- [ ] Clear previous app data (Tauri data directory) before starting cold-start and login tests.
-- [ ] Prepare measurement tools:
-  - [ ] Stopwatch or system utility to measure launch times (<2s) from launch until the UI is interactive.
-  - [ ] System monitor (Activity Monitor, Task Manager, System Monitor) to log idle memory usage right after launch.
-  - [ ] Console or app log collector to capture errors.
+## Preparación general
+- [ ] Verificar que la build bajo prueba coincide con la configuración final de producción (permisos, dominios permitidos, firma si aplica).
+- [ ] Asegurar que el entorno de prueba tiene conexión estable a internet y acceso a cuentas de prueba de SoundCloud (al menos una cuenta gratuita).
+- [ ] Limpiar datos previos de la aplicación (directorio de datos de Tauri) antes de iniciar pruebas de arranque en frío y login.
+- [ ] Preparar herramientas de medición:
+  - [ ] Cronómetro o utilidad del sistema para medir tiempos de lanzamiento (< 2 segundos) desde el arranque hasta que la UI sea interactiva.
+  - [ ] Monitor del sistema (Activity Monitor, Task Manager, System Monitor) para registrar uso de memoria en idle justo después del lanzamiento.
+  - [ ] Consola o recolector de logs de la app para capturar errores.
 
-## 1. Cold start and idle consumption
-- [ ] Remove previous user data.
-- [ ] Launch the app from a "cold" state (no background processes) and measure the time until the UI is ready. Confirm it is < 2 seconds.
-- [ ] Record idle memory usage (no interaction) immediately after SoundCloud loads; document the value and capture screenshots.
-- [ ] Close and repeat three times to validate consistency.
+## 1. Arranque en frío y consumo en idle
+- [ ] Eliminar datos de usuario previos.
+- [ ] Lanzar la app desde un estado "frío" (sin procesos en segundo plano) y medir el tiempo hasta que la UI esté lista. Confirmar que es < 2 segundos.
+- [ ] Registrar el uso de memoria en idle (sin interacción) inmediatamente después de cargar SoundCloud; documentar el valor y capturar capturas de pantalla.
+- [ ] Cerrar y repetir tres veces para validar consistencia.
 
-## 2. Login and persistence
-- [ ] Sign in with the test account from the WebView (SoundCloud).
-- [ ] Confirm the session is maintained while the app is open (reload the view and verify it remains authenticated).
-- [ ] Close the app completely, relaunch, and verify the session persists (no need to re-enter credentials).
-- [ ] Validate that logging out manually clears the session after restart.
+## 2. Login y persistencia
+- [ ] Iniciar sesión con la cuenta de prueba desde el WebView (SoundCloud).
+- [ ] Confirmar que la sesión se mantiene mientras la app está abierta (recargar la vista y verificar que sigue autenticada).
+- [ ] Cerrar completamente la app, relanzar y verificar que la sesión persiste (sin necesidad de reingresar credenciales).
+- [ ] Validar que cerrar sesión manualmente limpia la sesión tras reiniciar.
 
-## 3. Playback controls
-- [ ] Play a track and check that play/pause works via the WebView UI.
-- [ ] Validate keyboard shortcuts defined by the app (play/pause/next/previous) while the window is focused.
-- [ ] Test OS-level media keys while the app is in the background and confirm they control playback.
-- [ ] Verify playback state changes are reflected inside SoundCloud (progress bar, title).
+## 3. Controles de reproducción
+- [ ] Reproducir un track y comprobar que play/pause funciona desde la UI del WebView.
+- [ ] Validar atajos de teclado definidos por la app (play/pause/siguiente/anterior) con la ventana enfocada.
+- [ ] Probar teclas multimedia a nivel de OS con la app en segundo plano y confirmar que controlan la reproducción.
+- [ ] Verificar que los cambios de estado de reproducción se reflejan en SoundCloud (barra de progreso, título).
 
-## 4. External links
-- [ ] From an external link inside SoundCloud (for example, an artist’s "Twitter" link), confirm it opens in the system’s default browser and not in the WebView.
-- [ ] Test internal links (tracks, playlists) and ensure they open inside the WebView.
-- [ ] Review logs to confirm only the domains configured as external are allowed.
+## 4. Enlaces externos
+- [ ] Desde un enlace externo dentro de SoundCloud (por ejemplo, el "Twitter" de un artista), confirmar que se abre en el navegador predeterminado del sistema y no en el WebView.
+- [ ] Probar enlaces internos (tracks, playlists) y asegurar que abren dentro del WebView.
+- [ ] Revisar logs para confirmar que solo se permiten los dominios configurados como externos.
 
-## 5. System tray
-- [ ] Minimise the app to the tray and check that the main window disappears from the dock/taskbar.
-- [ ] From the tray icon, restore the window and verify it keeps state and playback.
-- [ ] Use the tray option to quit and confirm all app processes stop.
+## 5. Bandeja del sistema (tray)
+- [ ] Minimizar la app a la bandeja y comprobar que la ventana principal desaparece del dock/barra de tareas.
+- [ ] Desde el ícono de la bandeja, restaurar la ventana y verificar que mantiene estado y reproducción.
+- [ ] Usar la opción de la bandeja para salir y confirmar que todos los procesos de la app se detienen.
 
-## 6. Track notifications
-- [ ] Start playback and trigger a track change (manually or via a playlist).
-- [ ] Confirm the system displays a notification with title, artist, and artwork.
-- [ ] Validate that metadata updates in the notification/MPRIS/SMTC every time the track changes.
-- [ ] Ensure notifications respect system permissions and do not appear duplicated.
+## 6. Notificaciones de track
+- [ ] Iniciar reproducción y forzar un cambio de track (manual o vía playlist).
+- [ ] Confirmar que el sistema muestra una notificación con título, artista y carátula.
+- [ ] Validar que los metadatos se actualizan en la notificación/MPRIS/SMTC cada vez que cambia el track.
+- [ ] Asegurar que las notificaciones respetan permisos del sistema y no aparecen duplicadas.
 
-## 7. Platform-specific integrations
+## 7. Integraciones específicas por plataforma
 ### Linux
 - [ ] Open an MPRIS-compatible player (for example `playerctl`, GNOME Media Control) and confirm the app appears with working controls.
 - [ ] Test `playerctl play-pause`, `next`, `previous` commands and verify they reflect the correct state.
@@ -56,12 +56,12 @@
 - [ ] If the Now Playing integration is implemented, open Control Center or the Touch Bar (if available) to check title/controls.
 - [ ] Document if the integration is not available in the current build.
 
-## 8. Security and restrictions
-- [ ] Attempt to navigate to a non-allowed domain (capture log/alert). Confirm the app blocks the navigation.
-- [ ] Validate that only APIs authorised by the Tauri allowlist are accessible from the WebView (attempt disallowed IPC calls and expect them to fail).
-- [ ] Review the Content Security Policy and `tauri.conf.json` to ensure the allowed schemes, domains, and protocols match the requirements.
+## 8. Seguridad y restricciones
+- [ ] Intentar navegar a un dominio no permitido ("dominio no permitido", capturar log/alerta). Confirmar que la app bloquea la navegación.
+- [ ] Validar que solo las APIs autorizadas por la allowlist de Tauri son accesibles desde el WebView (intentar llamadas IPC no permitidas y esperar que fallen).
+- [ ] Revisar la Content Security Policy y `tauri.conf.json` para asegurar que los esquemas, dominios y protocolos permitidos coinciden con los requisitos.
 
-## 9. Wrap-up and reporting
-- [ ] Collect metrics: launch times, memory consumption, media controller logs, screenshots.
-- [ ] Document any bug or deviation, including steps to reproduce, environment, severity, and evidence.
-- [ ] Verify once more that the app closes completely without leftover processes after finishing the tests.
+## 9. Cierre y reporte
+- [ ] Recopilar métricas: tiempos de lanzamiento, consumo de memoria, logs del controlador multimedia, capturas de pantalla.
+- [ ] Documentar cualquier bug o desviación, incluyendo pasos para reproducir, entorno, severidad y evidencia.
+- [ ] Verificar nuevamente que la app cierra completamente sin procesos residuales al finalizar las pruebas.

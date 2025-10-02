@@ -6,6 +6,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::async_runtime;
 use tauri::AppHandle;
+use tauri::Emitter;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
@@ -23,7 +24,7 @@ pub struct DiscogsService {
 
 impl DiscogsService {
     pub fn new(app: &AppHandle, library: Arc<Mutex<LibraryStore>>) -> Self {
-        let (sender, mut receiver) = mpsc::channel(32);
+        let (sender, mut receiver) = mpsc::channel::<SoundcloudTrackPayload>(32);
         let client = Client::builder()
             .user_agent(USER_AGENT)
             .build()
@@ -94,7 +95,7 @@ async fn process_job(
     let query = build_search_term(&payload);
 
     if query.trim().is_empty() {
-        if let Ok(store) = library.lock() {
+        if let Ok(mut store) = library.lock() {
             if let Err(error) =
                 store.record_discogs_failure(&track_id, &query, "missing title or artist")
             {
@@ -109,7 +110,7 @@ async fn process_job(
             release,
             confidence,
         }) => {
-            if let Ok(store) = library.lock() {
+            if let Ok(mut store) = library.lock() {
                 if let Err(error) =
                     store.record_discogs_success(&track_id, &query, &release, confidence)
                 {
@@ -118,7 +119,7 @@ async fn process_job(
             }
         }
         Ok(LookupResult::Ambiguous { candidates }) => {
-            if let Ok(store) = library.lock() {
+            if let Ok(mut store) = library.lock() {
                 if let Err(error) = store.record_discogs_ambiguity(&track_id, &query, &candidates) {
                     eprintln!(
                         "[discogs] failed to persist lookup ambiguity for {track_id}: {error}"
@@ -126,7 +127,7 @@ async fn process_job(
                 }
             }
 
-            if let Err(error) = app.emit_all(
+            if let Err(error) = app.emit(
                 DISCOGS_AMBIGUITY_EVENT,
                 json!({
                     "trackId": track_id,
@@ -138,7 +139,7 @@ async fn process_job(
             }
         }
         Err(failure) => {
-            if let Ok(store) = library.lock() {
+            if let Ok(mut store) = library.lock() {
                 if let Err(error) =
                     store.record_discogs_failure(&track_id, &query, &failure.into_message())
                 {

@@ -136,8 +136,8 @@ pub struct MediaIntegration {
     linux: Option<linux::LinuxIntegration>,
     #[cfg(target_os = "windows")]
     windows: Option<windows::WindowsIntegration>,
-    #[cfg(target_os = "macos")]
-    macos: Option<macos::MacIntegration>,
+    // #[cfg(target_os = "macos")]
+    // macos: Option<macos::MacIntegration>,
 }
 
 impl MediaIntegration {
@@ -147,26 +147,24 @@ impl MediaIntegration {
             linux: linux::LinuxIntegration::new(app),
             #[cfg(target_os = "windows")]
             windows: windows::WindowsIntegration::new(app),
-            #[cfg(target_os = "macos")]
-            macos: macos::MacIntegration::new(),
+            // #[cfg(target_os = "macos")]
+            // macos: macos::MacIntegration::new(),
         }
     }
 
-    pub fn update(&self, update: &MediaUpdate) {
+    pub fn update(&self, _update: &MediaUpdate) {
         #[cfg(target_os = "linux")]
         if let Some(integration) = &self.linux {
-            integration.update(update);
+            integration.update(_update);
         }
-
         #[cfg(target_os = "windows")]
         if let Some(integration) = &self.windows {
-            integration.update(update);
+            integration.update(_update);
         }
-
-        #[cfg(target_os = "macos")]
-        if let Some(integration) = &self.macos {
-            integration.update(update);
-        }
+        // #[cfg(target_os = "macos")]
+        // if let Some(integration) = &self.macos {
+        //     integration.update(_update);
+        // }
     }
 }
 
@@ -467,69 +465,5 @@ mod windows {
     }
 }
 
-#[cfg(target_os = "macos")]
-mod macos {
-    use super::*;
-    use objc2::rc::autoreleasepool;
-    use objc2::runtime::Class;
-    use objc2::{msg_send, sel, sel_impl};
-    use objc2_foundation::{ns_string, NSDictionary, NSNumber, NSString};
-
-    pub struct MacIntegration;
-
-    impl MacIntegration {
-        pub fn new() -> Option<Self> {
-            unsafe { Class::get("MPNowPlayingInfoCenter").map(|_| MacIntegration) }
-        }
-
-        pub fn update(&self, update: &MediaUpdate) {
-            autoreleasepool(|_| unsafe {
-                let Some(class) = Class::get("MPNowPlayingInfoCenter") else {
-                    return;
-                };
-                let center: *mut objc2::runtime::Object = msg_send![class, defaultCenter];
-                if center.is_null() {
-                    return;
-                }
-
-                let mut entries: Vec<(&NSString, &objc2::runtime::Object)> = Vec::new();
-
-                if let Some(metadata) = &update.metadata {
-                    if let Some(title) = &metadata.title {
-                        let value = NSString::from_str(title);
-                        entries.push((ns_string!("MPMediaItemPropertyTitle"), value.as_ref()));
-                    }
-                    if let Some(artist) = &metadata.artist {
-                        let value = NSString::from_str(artist);
-                        entries.push((ns_string!("MPMediaItemPropertyArtist"), value.as_ref()));
-                    }
-                    if let Some(album) = &metadata.album {
-                        let value = NSString::from_str(album);
-                        entries.push((ns_string!("MPMediaItemPropertyAlbumTitle"), value.as_ref()));
-                    }
-                    if let Some(artwork) = &metadata.artwork_url {
-                        let value = NSString::from_str(artwork);
-                        entries.push((
-                            ns_string!("MPNowPlayingInfoPropertyAssetURL"),
-                            value.as_ref(),
-                        ));
-                    }
-                }
-
-                let rate = match update.playback {
-                    PlaybackStatus::Playing => 1.0,
-                    _ => 0.0,
-                };
-                let rate_number = NSNumber::new_f64(rate);
-                entries.push((
-                    ns_string!("MPNowPlayingInfoPropertyPlaybackRate"),
-                    rate_number.as_ref(),
-                ));
-
-                let (keys, values): (Vec<_>, Vec<_>) = entries.into_iter().unzip();
-                let dict = NSDictionary::from_slices(&keys, &values);
-                let _: () = msg_send![center, setNowPlayingInfo: dict];
-            });
-        }
-    }
-}
+// #[cfg(target_os = "macos")]
+// mod macos { /* disabled */ }

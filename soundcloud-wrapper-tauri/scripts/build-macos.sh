@@ -32,6 +32,6 @@ npm ci
 npm run test
 npm run build
 cargo test --workspace --manifest-path src-tauri/Cargo.toml
-cargo tauri build --bundles dmg "$@"
+npm run tauri:build -- --bundles dmg "$@"
 
 popd >/dev/null

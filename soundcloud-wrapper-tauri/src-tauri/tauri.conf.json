@@ -36,14 +36,12 @@
       "deb",
       "rpm"
     ],
-    "identifier": "com.soundcloud.desktop",
     "icon": [
       "icons/icon.icns",
       "icons/icon.ico",
       "icons/icon.png"
     ],
     "macOS": {
-      "category": "public.app-category.music",
       "minimumSystemVersion": "10.15",
       "signingIdentity": null
     },

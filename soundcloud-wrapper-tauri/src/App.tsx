@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen, emit, type UnlistenFn } from "@tauri-apps/api/event";
 
 const DISCOGS_AMBIGUITY_EVENT = "app://discogs/lookup-ambiguous";
 const MUSICBRAINZ_AMBIGUITY_EVENT = "app://musicbrainz/lookup-ambiguous";
@@ -131,15 +131,20 @@ type AsyncState<T> =
   | { status: "error"; message: string }
   | { status: "ready"; data: T };
 
-const normalizeDiscogsCandidate = (candidate: DiscogsCandidatePayload): DiscogsCandidate => {
+const normalizeDiscogsCandidate = (
+  candidate: DiscogsCandidatePayload
+): DiscogsCandidate => {
   const raw = candidate.rawPayload ?? {};
   const title = typeof raw.title === "string" ? raw.title : undefined;
   const year = typeof raw.year === "number" ? raw.year : undefined;
   const country = typeof raw.country === "string" ? raw.country : undefined;
   const thumb = typeof raw.thumb === "string" ? raw.thumb : undefined;
-  const resourceUrl = typeof raw.resourceUrl === "string" ? raw.resourceUrl : undefined;
-  const score = typeof candidate.score === "number" ? candidate.score : undefined;
-  const releaseId = candidate.releaseId ?? (typeof raw.id === "string" ? raw.id : undefined);
+  const resourceUrl =
+    typeof raw.resourceUrl === "string" ? raw.resourceUrl : undefined;
+  const score =
+    typeof candidate.score === "number" ? candidate.score : undefined;
+  const releaseId =
+    candidate.releaseId ?? (typeof raw.id === "string" ? raw.id : undefined);
 
   return {
     matchId: candidate.matchId,
@@ -165,13 +170,18 @@ const normalizeMusicbrainzCandidate = (
     typeof raw.disambiguation === "string" ? raw.disambiguation : undefined;
   const releaseId =
     candidate.releaseId ?? (typeof raw.id === "string" ? raw.id : undefined);
-  const score = typeof candidate.score === "number" ? candidate.score : undefined;
+  const score =
+    typeof candidate.score === "number" ? candidate.score : undefined;
 
   let artist: string | undefined;
   const artistCredit = raw["artist-credit"];
   if (Array.isArray(artistCredit) && artistCredit.length > 0) {
     const primary = artistCredit[0];
-    if (primary && typeof primary === "object" && typeof primary.name === "string") {
+    if (
+      primary &&
+      typeof primary === "object" &&
+      typeof primary.name === "string"
+    ) {
       artist = primary.name;
     }
   }
@@ -317,7 +327,10 @@ const getErrorMessage = (error: unknown) => {
   }
 };
 
+type ViewMode = "soundcloud" | "bandcamp" | "database" | "filesystem";
+
 const App = () => {
+  const [mode, setMode] = useState<ViewMode>("soundcloud");
   const [filters, setFilters] = useState<FilterState>({
     missingAssetsOnly: false,
     unresolvedDiscogsOnly: false,
@@ -329,20 +342,29 @@ const App = () => {
   const [currentOffset, setCurrentOffset] = useState(0);
   const [loadingTracks, setLoadingTracks] = useState(false);
   const [trackError, setTrackError] = useState<string | null>(null);
-  const [selectedTrackId, setSelectedTrackId] = useState<Nullable<string>>(null);
-  const [discogsCandidateCache, setDiscogsCandidateCache] = useState<Record<string, DiscogsCandidate[]>>({});
+  const [selectedTrackId, setSelectedTrackId] =
+    useState<Nullable<string>>(null);
+  const [discogsCandidateCache, setDiscogsCandidateCache] = useState<
+    Record<string, DiscogsCandidate[]>
+  >({});
   const [musicbrainzCandidateCache, setMusicbrainzCandidateCache] = useState<
     Record<string, MusicbrainzCandidate[]>
   >({});
-  const [discogsCandidateState, setDiscogsCandidateState] = useState<AsyncState<DiscogsCandidate[]>>({
+  const [discogsCandidateState, setDiscogsCandidateState] = useState<
+    AsyncState<DiscogsCandidate[]>
+  >({
     status: "idle",
   });
   const [musicbrainzCandidateState, setMusicbrainzCandidateState] = useState<
     AsyncState<MusicbrainzCandidate[]>
   >({ status: "idle" });
-  const [activeCandidateSource, setActiveCandidateSource] = useState<CandidateSource>("discogs");
+  const [activeCandidateSource, setActiveCandidateSource] =
+    useState<CandidateSource>("discogs");
   const [jobs, setJobs] = useState<Record<string, JobRecord>>({});
-  const [statusMessage, setStatusMessage] = useState<Nullable<{ type: "success" | "error" | "info"; text: string }>>(null);
+  const [statusMessage, setStatusMessage] =
+    useState<Nullable<{ type: "success" | "error" | "info"; text: string }>>(
+      null
+    );
 
   useEffect(() => {
     if (!statusMessage) {
@@ -368,13 +390,18 @@ const App = () => {
       setLoadingTracks(true);
       setTrackError(null);
       try {
-        const response = await invoke<LibraryStatusPage>("list_library_status", {
-          filter: {
-            ...filterPayload,
-            offset,
-          },
-        });
-        setTracks((previous) => (replace ? response.rows : [...previous, ...response.rows]));
+        const response = await invoke<LibraryStatusPage>(
+          "list_library_status",
+          {
+            filter: {
+              ...filterPayload,
+              offset,
+            },
+          }
+        );
+        setTracks((previous) =>
+          replace ? response.rows : [...previous, ...response.rows]
+        );
         setTotalTracks(response.total ?? response.rows.length);
         const nextOffset = (response.offset ?? offset) + response.rows.length;
         setCurrentOffset(nextOffset);
@@ -397,51 +424,74 @@ const App = () => {
     });
   }, [fetchTracks]);
 
+  // Notify backend to show/hide SC/BC webviews to the right of the sidebar
+  useEffect(() => {
+    (async () => {
+      try {
+        await emit("ui://mode", mode);
+      } catch (_err) {
+        // ignore
+      }
+    })();
+  }, [mode]);
+
+  const switchMode = (next: ViewMode) => {
+    setMode(next);
+    // backend will handle showing the proper webview
+    emit("ui://mode", next).catch(() => {});
+  };
+
   useEffect(() => {
     if (!selectedTrackId && tracks.length > 0) {
       setSelectedTrackId(tracks[0].trackId);
       return;
     }
-    if (selectedTrackId && !tracks.some((row) => row.trackId === selectedTrackId)) {
+    if (
+      selectedTrackId &&
+      !tracks.some((row) => row.trackId === selectedTrackId)
+    ) {
       setSelectedTrackId(tracks.length > 0 ? tracks[0].trackId : null);
     }
   }, [selectedTrackId, tracks]);
 
   const attachDiscogsListener = useCallback(async () => {
     try {
-      const unlistenPromise = listen<DiscogsAmbiguityEvent>(DISCOGS_AMBIGUITY_EVENT, (event) => {
-        const payload = event.payload;
-        if (!payload || !payload.trackId) {
-          return;
+      const unlistenPromise = listen<DiscogsAmbiguityEvent>(
+        DISCOGS_AMBIGUITY_EVENT,
+        (event) => {
+          const payload = event.payload;
+          if (!payload || !payload.trackId) {
+            return;
+          }
+          setDiscogsCandidateCache((previous) => ({
+            ...previous,
+            [payload.trackId]: (payload.candidates || []).map((candidate) => {
+              const rawId =
+                typeof candidate.releaseId === "string"
+                  ? candidate.releaseId
+                  : typeof candidate.releaseId === "number"
+                  ? candidate.releaseId.toString()
+                  : typeof candidate.id === "string"
+                  ? candidate.id
+                  : typeof candidate.id === "number"
+                  ? candidate.id.toString()
+                  : undefined;
+              const rawScore =
+                typeof candidate.score === "number"
+                  ? candidate.score
+                  : typeof candidate.score === "string"
+                  ? Number.parseFloat(candidate.score)
+                  : undefined;
+              return normalizeDiscogsCandidate({
+                matchId: payload.trackId,
+                rawPayload: candidate,
+                releaseId: rawId,
+                score: rawScore,
+              });
+            }),
+          }));
         }
-        setDiscogsCandidateCache((previous) => ({
-          ...previous,
-          [payload.trackId]: (payload.candidates || []).map((candidate) => {
-            const rawId =
-              typeof candidate.releaseId === "string"
-                ? candidate.releaseId
-                : typeof candidate.releaseId === "number"
-                ? candidate.releaseId.toString()
-                : typeof candidate.id === "string"
-                ? candidate.id
-                : typeof candidate.id === "number"
-                ? candidate.id.toString()
-                : undefined;
-            const rawScore =
-              typeof candidate.score === "number"
-                ? candidate.score
-                : typeof candidate.score === "string"
-                ? Number.parseFloat(candidate.score)
-                : undefined;
-            return normalizeDiscogsCandidate({
-              matchId: payload.trackId,
-              rawPayload: candidate,
-              releaseId: rawId,
-              score: rawScore,
-            });
-          }),
-        }));
-      });
+      );
       return unlistenPromise;
     } catch (error) {
       console.warn("No se pudo suscribir a eventos de Discogs", error);
@@ -517,38 +567,42 @@ const App = () => {
   useEffect(() => {
     const attachJobListener = async () => {
       try {
-        const dispose = await listen<JobProgressPayload>(JOB_PROGRESS_EVENT, (event) => {
-          const payload = event.payload;
-          if (!payload) {
-            return;
-          }
-          const id = payload.id || payload.label || "background-job";
-          setJobs((previous) => {
-            const next: Record<string, JobRecord> = { ...previous };
-            const existing = next[id];
-            const record: JobRecord = {
-              id,
-              label: payload.label || existing?.label || "Tarea en segundo plano",
-              state: payload.state || existing?.state || "running",
-              completed: payload.completed ?? existing?.completed ?? 0,
-              total: payload.total ?? existing?.total,
-              message: payload.message ?? existing?.message,
-              updatedAt: Date.now(),
-            };
-            next[id] = record;
-            if (record.state === "completed" || record.state === "success") {
-              // Remove completed jobs after a short delay
-              setTimeout(() => {
-                setJobs((current) => {
-                  const clone = { ...current };
-                  delete clone[id];
-                  return clone;
-                });
-              }, 4000);
+        const dispose = await listen<JobProgressPayload>(
+          JOB_PROGRESS_EVENT,
+          (event) => {
+            const payload = event.payload;
+            if (!payload) {
+              return;
             }
-            return next;
-          });
-        });
+            const id = payload.id || payload.label || "background-job";
+            setJobs((previous) => {
+              const next: Record<string, JobRecord> = { ...previous };
+              const existing = next[id];
+              const record: JobRecord = {
+                id,
+                label:
+                  payload.label || existing?.label || "Tarea en segundo plano",
+                state: payload.state || existing?.state || "running",
+                completed: payload.completed ?? existing?.completed ?? 0,
+                total: payload.total ?? existing?.total,
+                message: payload.message ?? existing?.message,
+                updatedAt: Date.now(),
+              };
+              next[id] = record;
+              if (record.state === "completed" || record.state === "success") {
+                // Remove completed jobs after a short delay
+                setTimeout(() => {
+                  setJobs((current) => {
+                    const clone = { ...current };
+                    delete clone[id];
+                    return clone;
+                  });
+                }, 4000);
+              }
+              return next;
+            });
+          }
+        );
         return dispose;
       } catch (error) {
         console.warn("No se pudo suscribir al progreso de tareas", error);
@@ -579,14 +633,23 @@ const App = () => {
       }
       setDiscogsCandidateState({ status: "loading" });
       try {
-        const response = await invoke<DiscogsCandidatePayload[]>("list_discogs_candidates", {
-          trackId,
-        });
+        const response = await invoke<DiscogsCandidatePayload[]>(
+          "list_discogs_candidates",
+          {
+            trackId,
+          }
+        );
         const normalized = response.map(normalizeDiscogsCandidate);
-        setDiscogsCandidateCache((previous) => ({ ...previous, [trackId]: normalized }));
+        setDiscogsCandidateCache((previous) => ({
+          ...previous,
+          [trackId]: normalized,
+        }));
         setDiscogsCandidateState({ status: "ready", data: normalized });
       } catch (error) {
-        setDiscogsCandidateState({ status: "error", message: getErrorMessage(error) });
+        setDiscogsCandidateState({
+          status: "error",
+          message: getErrorMessage(error),
+        });
       }
     },
     [discogsCandidateCache]
@@ -610,10 +673,16 @@ const App = () => {
           }
         );
         const normalized = response.map(normalizeMusicbrainzCandidate);
-        setMusicbrainzCandidateCache((previous) => ({ ...previous, [trackId]: normalized }));
+        setMusicbrainzCandidateCache((previous) => ({
+          ...previous,
+          [trackId]: normalized,
+        }));
         setMusicbrainzCandidateState({ status: "ready", data: normalized });
       } catch (error) {
-        setMusicbrainzCandidateState({ status: "error", message: getErrorMessage(error) });
+        setMusicbrainzCandidateState({
+          status: "error",
+          message: getErrorMessage(error),
+        });
       }
     },
     [musicbrainzCandidateCache]
@@ -626,10 +695,16 @@ const App = () => {
       return;
     }
     loadDiscogsCandidates(selectedTrackId).catch((error) => {
-      setDiscogsCandidateState({ status: "error", message: getErrorMessage(error) });
+      setDiscogsCandidateState({
+        status: "error",
+        message: getErrorMessage(error),
+      });
     });
     loadMusicbrainzCandidates(selectedTrackId).catch((error) => {
-      setMusicbrainzCandidateState({ status: "error", message: getErrorMessage(error) });
+      setMusicbrainzCandidateState({
+        status: "error",
+        message: getErrorMessage(error),
+      });
     });
   }, [selectedTrackId, loadDiscogsCandidates, loadMusicbrainzCandidates]);
 
@@ -642,10 +717,15 @@ const App = () => {
     if (!selectedTrack) {
       return false;
     }
-    if (!selectedTrack.discogsReleaseId || !selectedTrack.musicbrainzReleaseId) {
+    if (
+      !selectedTrack.discogsReleaseId ||
+      !selectedTrack.musicbrainzReleaseId
+    ) {
       return false;
     }
-    return selectedTrack.discogsReleaseId !== selectedTrack.musicbrainzReleaseId;
+    return (
+      selectedTrack.discogsReleaseId !== selectedTrack.musicbrainzReleaseId
+    );
   }, [selectedTrack]);
 
   const discogsStatusInfo = selectedTrack
@@ -677,31 +757,46 @@ const App = () => {
         );
       case "ready":
         if (discogsCandidateState.data.length === 0) {
-          return <p className="detail-card__empty">No hay candidatos pendientes para esta pista.</p>;
+          return (
+            <p className="detail-card__empty">
+              No hay candidatos pendientes para esta pista.
+            </p>
+          );
         }
         return (
           <ul className="candidate-list">
             {discogsCandidateState.data.map((candidate) => (
               <li
-                key={`${candidate.matchId}-${candidate.releaseId || candidate.title}`}
-                className="candidate-list__item"
-              >
+                key={`${candidate.matchId}-${
+                  candidate.releaseId || candidate.title
+                }`}
+                className="candidate-list__item">
                 <div className="candidate-list__main">
                   <div className="candidate-list__info">
                     <h4>{candidate.title || "Sin título"}</h4>
                     <p className="candidate-list__meta">
                       {candidate.year ? `${candidate.year}` : "Año desconocido"}
                       {candidate.country ? ` · ${candidate.country}` : ""}
-                      {typeof candidate.score === "number" ? ` · ${candidate.score.toFixed(1)} pts` : ""}
+                      {typeof candidate.score === "number"
+                        ? ` · ${candidate.score.toFixed(1)} pts`
+                        : ""}
                     </p>
                     {candidate.resourceUrl && (
-                      <a className="link" href={candidate.resourceUrl} target="_blank" rel="noreferrer">
+                      <a
+                        className="link"
+                        href={candidate.resourceUrl}
+                        target="_blank"
+                        rel="noreferrer">
                         Abrir en Discogs
                       </a>
                     )}
                   </div>
                   {candidate.thumb && (
-                    <img src={candidate.thumb} alt="Carátula" className="candidate-list__thumb" />
+                    <img
+                      src={candidate.thumb}
+                      alt="Carátula"
+                      className="candidate-list__thumb"
+                    />
                   )}
                 </div>
                 <div className="candidate-list__actions">
@@ -709,8 +804,7 @@ const App = () => {
                     type="button"
                     className="button button--small"
                     onClick={() => handleConfirmDiscogsCandidate(candidate)}
-                    disabled={!candidate.releaseId}
-                  >
+                    disabled={!candidate.releaseId}>
                     Confirmar coincidencia
                   </button>
                 </div>
@@ -719,7 +813,11 @@ const App = () => {
           </ul>
         );
       default:
-        return <p className="detail-card__empty">Selecciona una pista para ver candidatos.</p>;
+        return (
+          <p className="detail-card__empty">
+            Selecciona una pista para ver candidatos.
+          </p>
+        );
     }
   };
 
@@ -737,27 +835,49 @@ const App = () => {
         );
       case "ready":
         if (musicbrainzCandidateState.data.length === 0) {
-          return <p className="detail-card__empty">No hay candidatos pendientes para esta pista.</p>;
+          return (
+            <p className="detail-card__empty">
+              No hay candidatos pendientes para esta pista.
+            </p>
+          );
         }
         return (
           <ul className="candidate-list">
             {musicbrainzCandidateState.data.map((candidate) => (
-              <li key={`${candidate.matchId}-${candidate.releaseId || candidate.title}`} className="candidate-list__item">
+              <li
+                key={`${candidate.matchId}-${
+                  candidate.releaseId || candidate.title
+                }`}
+                className="candidate-list__item">
                 <div className="candidate-list__main">
                   <div className="candidate-list__info">
                     <h4>{candidate.title || "Sin título"}</h4>
                     <p className="candidate-list__meta">
-                      {candidate.artist ? candidate.artist : "Artista desconocido"}
+                      {candidate.artist
+                        ? candidate.artist
+                        : "Artista desconocido"}
                       {candidate.date ? ` · ${candidate.date}` : ""}
                       {candidate.country ? ` · ${candidate.country}` : ""}
-                      {typeof candidate.score === "number" ? ` · ${candidate.score.toFixed(1)} pts` : ""}
+                      {typeof candidate.score === "number"
+                        ? ` · ${candidate.score.toFixed(1)} pts`
+                        : ""}
                     </p>
-                    {candidate.label && <p className="candidate-list__submeta">{candidate.label}</p>}
+                    {candidate.label && (
+                      <p className="candidate-list__submeta">
+                        {candidate.label}
+                      </p>
+                    )}
                     {candidate.disambiguation && (
-                      <p className="candidate-list__note">{candidate.disambiguation}</p>
+                      <p className="candidate-list__note">
+                        {candidate.disambiguation}
+                      </p>
                     )}
                     {candidate.releaseUrl && (
-                      <a className="link" href={candidate.releaseUrl} target="_blank" rel="noreferrer">
+                      <a
+                        className="link"
+                        href={candidate.releaseUrl}
+                        target="_blank"
+                        rel="noreferrer">
                         Abrir en MusicBrainz
                       </a>
                     )}
@@ -768,8 +888,7 @@ const App = () => {
                     type="button"
                     className="button button--small"
                     onClick={() => handleConfirmMusicbrainzCandidate(candidate)}
-                    disabled={!candidate.releaseId}
-                  >
+                    disabled={!candidate.releaseId}>
                     Confirmar coincidencia
                   </button>
                 </div>
@@ -778,7 +897,11 @@ const App = () => {
           </ul>
         );
       default:
-        return <p className="detail-card__empty">Selecciona una pista para ver candidatos.</p>;
+        return (
+          <p className="detail-card__empty">
+            Selecciona una pista para ver candidatos.
+          </p>
+        );
     }
   };
 
@@ -823,7 +946,10 @@ const App = () => {
   const handleRefreshLikes = async () => {
     try {
       await invoke("refresh_soundcloud_likes");
-      setStatusMessage({ type: "success", text: "Actualización de likes solicitada" });
+      setStatusMessage({
+        type: "success",
+        text: "Actualización de likes solicitada",
+      });
     } catch (error) {
       setStatusMessage({ type: "error", text: getErrorMessage(error) });
     }
@@ -840,7 +966,10 @@ const App = () => {
         return;
       }
       await invoke("import_rekordbox_library", { dbPath: selected });
-      setStatusMessage({ type: "success", text: "Importación de Rekordbox iniciada" });
+      setStatusMessage({
+        type: "success",
+        text: "Importación de Rekordbox iniciada",
+      });
     } catch (error) {
       setStatusMessage({ type: "error", text: getErrorMessage(error) });
     }
@@ -854,7 +983,10 @@ const App = () => {
 
   const handleConfirmDiscogsCandidate = async (candidate: DiscogsCandidate) => {
     if (!selectedTrackId || !candidate.releaseId) {
-      setStatusMessage({ type: "error", text: "Selecciona un candidato válido." });
+      setStatusMessage({
+        type: "error",
+        text: "Selecciona un candidato válido.",
+      });
       return;
     }
     try {
@@ -863,7 +995,10 @@ const App = () => {
         releaseId: candidate.releaseId,
         candidate: candidate.rawPayload,
       });
-      setStatusMessage({ type: "success", text: "Coincidencia confirmada en Discogs" });
+      setStatusMessage({
+        type: "success",
+        text: "Coincidencia confirmada en Discogs",
+      });
       setDiscogsCandidateCache((previous) => {
         const clone = { ...previous };
         delete clone[selectedTrackId];
@@ -876,9 +1011,14 @@ const App = () => {
     }
   };
 
-  const handleConfirmMusicbrainzCandidate = async (candidate: MusicbrainzCandidate) => {
+  const handleConfirmMusicbrainzCandidate = async (
+    candidate: MusicbrainzCandidate
+  ) => {
     if (!selectedTrackId) {
-      setStatusMessage({ type: "error", text: "Selecciona un candidato válido." });
+      setStatusMessage({
+        type: "error",
+        text: "Selecciona un candidato válido.",
+      });
       return;
     }
     try {
@@ -889,7 +1029,10 @@ const App = () => {
         confidence: candidate.score,
         query: track?.musicbrainzQuery ?? null,
       });
-      setStatusMessage({ type: "success", text: "Coincidencia confirmada en MusicBrainz" });
+      setStatusMessage({
+        type: "success",
+        text: "Coincidencia confirmada en MusicBrainz",
+      });
       setMusicbrainzCandidateCache((previous) => {
         const clone = { ...previous };
         delete clone[selectedTrackId];
@@ -939,7 +1082,10 @@ const App = () => {
     }
     try {
       await invoke("retry_discogs_lookup", { trackId: selectedTrackId });
-      setStatusMessage({ type: "success", text: "Búsqueda en Discogs reintentada" });
+      setStatusMessage({
+        type: "success",
+        text: "Búsqueda en Discogs reintentada",
+      });
       setDiscogsCandidateCache((previous) => {
         const clone = { ...previous };
         delete clone[selectedTrackId];
@@ -958,7 +1104,10 @@ const App = () => {
     }
     try {
       await invoke("retry_musicbrainz_lookup", { trackId: selectedTrackId });
-      setStatusMessage({ type: "success", text: "Búsqueda en MusicBrainz reintentada" });
+      setStatusMessage({
+        type: "success",
+        text: "Búsqueda en MusicBrainz reintentada",
+      });
       setMusicbrainzCandidateCache((previous) => {
         const clone = { ...previous };
         delete clone[selectedTrackId];
@@ -982,11 +1131,81 @@ const App = () => {
             </p>
           </div>
           <div className="sidebar__header-actions">
-            <button type="button" className="button button--ghost" onClick={refreshCurrentPage} disabled={loadingTracks}>
+            <button
+              type="button"
+              className="button button--ghost"
+              onClick={refreshCurrentPage}
+              disabled={loadingTracks}>
               Recargar
             </button>
           </div>
         </header>
+        <nav className="sidebar__nav">
+          <h2>Acciones locales</h2>
+          <ul className="nav-list">
+            <li>
+              <button
+                type="button"
+                className="nav-list__button"
+                onClick={handleRefreshLikes}>
+                Sincronizar likes de SoundCloud
+              </button>
+            </li>
+            <li>
+              <button
+                type="button"
+                className="nav-list__button"
+                onClick={handleImportRekordbox}>
+                Importar biblioteca Rekordbox
+              </button>
+            </li>
+          </ul>
+          <h3 className="nav-list__group">Vistas guardadas</h3>
+          <ul className="nav-list nav-list--sub">
+            <li>
+              <button
+                type="button"
+                className={`nav-list__button ${
+                  filters.missingAssetsOnly ? "is-active" : ""
+                }`}
+                onClick={() => handleFilterChange("missingAssetsOnly")(true)}>
+                Faltan archivos locales
+              </button>
+            </li>
+            <li>
+              <button
+                type="button"
+                className={`nav-list__button ${
+                  filters.unresolvedDiscogsOnly ? "is-active" : ""
+                }`}
+                onClick={() =>
+                  handleFilterChange("unresolvedDiscogsOnly")(true)
+                }>
+                Sin match en Discogs
+              </button>
+            </li>
+            <li>
+              <button
+                type="button"
+                className={`nav-list__button ${
+                  filters.likedOnly ? "is-active" : ""
+                }`}
+                onClick={() => handleFilterChange("likedOnly")(true)}>
+                Solo likes de SoundCloud
+              </button>
+            </li>
+            <li>
+              <button
+                type="button"
+                className={`nav-list__button ${
+                  filters.rekordboxOnly ? "is-active" : ""
+                }`}
+                onClick={() => handleFilterChange("rekordboxOnly")(true)}>
+                En Rekordbox
+              </button>
+            </li>
+          </ul>
+        </nav>
         <section className="sidebar__filters">
           <h2>Filtros</h2>
           <div className="filter-group">
@@ -1024,7 +1243,9 @@ const App = () => {
               {tracks.map((row) => {
                 const isSelected = row.trackId === selectedTrackId;
                 const discogsBadge = getDiscogsStatusBadge(row.discogsStatus);
-                const musicbrainzBadge = getMusicbrainzStatusBadge(row.musicbrainzStatus);
+                const musicbrainzBadge = getMusicbrainzStatusBadge(
+                  row.musicbrainzStatus
+                );
                 const conflict =
                   row.discogsReleaseId &&
                   row.musicbrainzReleaseId &&
@@ -1032,22 +1253,48 @@ const App = () => {
                 return (
                   <li
                     key={row.trackId}
-                    className={`track-list__item ${isSelected ? "track-list__item--active" : ""}`}
-                    onClick={() => setSelectedTrackId(row.trackId)}
-                  >
-                    <div className="track-list__title">{row.title || "Sin título"}</div>
-                    <div className="track-list__meta">{row.artist || "Artista desconocido"}</div>
+                    className={`track-list__item ${
+                      isSelected ? "track-list__item--active" : ""
+                    }`}
+                    onClick={() => setSelectedTrackId(row.trackId)}>
+                    <div className="track-list__title">
+                      {row.title || "Sin título"}
+                    </div>
+                    <div className="track-list__meta">
+                      {row.artist || "Artista desconocido"}
+                    </div>
                     <div className="track-list__badges">
                       {row.liked && <Badge label="Like" variant="primary" />}
-                      {discogsBadge && <Badge label={discogsBadge.label} variant={discogsBadge.variant} />}
-                      {musicbrainzBadge && <Badge label={musicbrainzBadge.label} variant={musicbrainzBadge.variant} />}
+                      {discogsBadge && (
+                        <Badge
+                          label={discogsBadge.label}
+                          variant={discogsBadge.variant}
+                        />
+                      )}
+                      {musicbrainzBadge && (
+                        <Badge
+                          label={musicbrainzBadge.label}
+                          variant={musicbrainzBadge.variant}
+                        />
+                      )}
                       {row.hasLocalFile ? (
-                        <Badge label={row.localAvailable ? "Archivo local" : "Archivo no disponible"} variant={row.localAvailable ? "success" : "warning"} />
+                        <Badge
+                          label={
+                            row.localAvailable
+                              ? "Archivo local"
+                              : "Archivo no disponible"
+                          }
+                          variant={row.localAvailable ? "success" : "warning"}
+                        />
                       ) : (
                         <Badge label="Sin archivo" variant="warning" />
                       )}
-                      {row.inRekordbox && <Badge label="Rekordbox" variant="neutral" />}
-                      {conflict && <Badge label="Conflicto" variant="warning" />}
+                      {row.inRekordbox && (
+                        <Badge label="Rekordbox" variant="neutral" />
+                      )}
+                      {conflict && (
+                        <Badge label="Conflicto" variant="warning" />
+                      )}
                     </div>
                   </li>
                 );
@@ -1056,196 +1303,298 @@ const App = () => {
           )}
           {loadingTracks && <div className="sidebar__loading">Cargando…</div>}
           {hasMore && !loadingTracks && (
-            <button type="button" className="button button--ghost sidebar__load-more" onClick={handleLoadMore}>
+            <button
+              type="button"
+              className="button button--ghost sidebar__load-more"
+              onClick={handleLoadMore}>
               Cargar más
             </button>
           )}
         </section>
+        <footer className="sidebar__modes">
+          <button
+            type="button"
+            className={`mode-dot ${
+              mode === "soundcloud" ? "mode-dot--active" : ""
+            }`}
+            title="SoundCloud"
+            onClick={() => switchMode("soundcloud")}>
+            SC
+          </button>
+          <button
+            type="button"
+            className={`mode-dot ${
+              mode === "bandcamp" ? "mode-dot--active" : ""
+            }`}
+            title="Bandcamp"
+            onClick={() => switchMode("bandcamp")}>
+            BC
+          </button>
+          <button
+            type="button"
+            className={`mode-dot ${
+              mode === "database" ? "mode-dot--active" : ""
+            }`}
+            title="Base de datos"
+            onClick={() => switchMode("database")}>
+            DB
+          </button>
+        </footer>
       </aside>
       <main className="workspace">
         <section className="workspace__toolbar">
           <div className="toolbar__actions">
-            <button type="button" className="button" onClick={handleRefreshLikes}>
+            <button
+              type="button"
+              className="button"
+              onClick={handleRefreshLikes}>
               Actualizar likes de SoundCloud
             </button>
-            <button type="button" className="button" onClick={handleImportRekordbox}>
+            <button
+              type="button"
+              className="button"
+              onClick={handleImportRekordbox}>
               Importar biblioteca de Rekordbox
             </button>
           </div>
           {statusMessage && (
-            <div className={`toolbar__message toolbar__message--${statusMessage.type}`}>
+            <div
+              className={`toolbar__message toolbar__message--${statusMessage.type}`}>
               {statusMessage.text}
             </div>
           )}
         </section>
         <section className="workspace__content">
-          {selectedTrack ? (
-            <div className="track-detail">
-              <header className="track-detail__header">
-                <div>
-                  <h2>{selectedTrack.title || "Sin título"}</h2>
-                  <p className="track-detail__subtitle">{selectedTrack.artist || "Artista desconocido"}</p>
-                </div>
-                <div className="track-detail__badges">
-                  {selectedTrack.liked && <Badge label="Like" variant="primary" />}
-                  {discogsStatusInfo && <Badge label={discogsStatusInfo.label} variant={discogsStatusInfo.variant} />}
-                  {musicbrainzStatusInfo && <Badge label={musicbrainzStatusInfo.label} variant={musicbrainzStatusInfo.variant} />}
-                  {selectedTrack.hasLocalFile && (
-                    <Badge label={selectedTrack.localAvailable ? "Archivo local" : "Archivo no disponible"} variant={selectedTrack.localAvailable ? "success" : "warning"} />
-                  )}
-                  {selectedTrack.inRekordbox && <Badge label="Rekordbox" variant="neutral" />}
-                  {hasIntegrationConflict && <Badge label="Conflicto" variant="warning" />}
-                </div>
-              </header>
-              <div className="track-detail__grid">
-                <article className="detail-card">
-                  <h3>Información general</h3>
-                  {hasIntegrationConflict && (
-                    <div className="detail-card__alert detail-card__alert--warning">
-                      Se detectó un conflicto entre los lanzamientos confirmados en Discogs y MusicBrainz.
-                      Revisa y alinea las coincidencias para garantizar metadatos consistentes.
-                    </div>
-                  )}
-                  <dl className="detail-list">
-                    <div>
-                      <dt>Álbum</dt>
-                      <dd>{selectedTrack.album || "Sin datos"}</dd>
-                    </div>
-                    <div>
-                      <dt>Estado Discogs</dt>
-                      <dd>{describeStatus(selectedTrack.discogsStatus)}</dd>
-                    </div>
-                    <div>
-                      <dt>Lanzamiento Discogs</dt>
-                      <dd>{selectedTrack.discogsReleaseId || "Sin datos"}</dd>
-                    </div>
-                    <div>
-                      <dt>Confianza Discogs</dt>
-                      <dd>{formatScore(selectedTrack.discogsConfidence)}</dd>
-                    </div>
-                    <div>
-                      <dt>Candidatos Discogs</dt>
-                      <dd>{selectedTrack.discogsCandidateCount ?? 0}</dd>
-                    </div>
-                    <div>
-                      <dt>Última comprobación Discogs</dt>
-                      <dd>{formatDate(selectedTrack.discogsCheckedAt)}</dd>
-                    </div>
-                    <div>
-                      <dt>Mensaje Discogs</dt>
-                      <dd>{selectedTrack.discogsMessage || "—"}</dd>
-                    </div>
-                    <div>
-                      <dt>Consulta Discogs</dt>
-                      <dd>{selectedTrack.discogsQuery || "Sin datos"}</dd>
-                    </div>
-                    <div>
-                      <dt>Estado MusicBrainz</dt>
-                      <dd>{describeStatus(selectedTrack.musicbrainzStatus)}</dd>
-                    </div>
-                    <div>
-                      <dt>Lanzamiento MusicBrainz</dt>
-                      <dd>{selectedTrack.musicbrainzReleaseId || "Sin datos"}</dd>
-                    </div>
-                    <div>
-                      <dt>Confianza MusicBrainz</dt>
-                      <dd>{formatScore(selectedTrack.musicbrainzConfidence)}</dd>
-                    </div>
-                    <div>
-                      <dt>Candidatos MusicBrainz</dt>
-                      <dd>{selectedTrack.musicbrainzCandidateCount ?? 0}</dd>
-                    </div>
-                    <div>
-                      <dt>Última comprobación MusicBrainz</dt>
-                      <dd>{formatDate(selectedTrack.musicbrainzCheckedAt)}</dd>
-                    </div>
-                    <div>
-                      <dt>Mensaje MusicBrainz</dt>
-                      <dd>{selectedTrack.musicbrainzMessage || "—"}</dd>
-                    </div>
-                    <div>
-                      <dt>Consulta MusicBrainz</dt>
-                      <dd>{selectedTrack.musicbrainzQuery || "Sin datos"}</dd>
-                    </div>
-                    <div>
-                      <dt>Like en SoundCloud</dt>
-                      <dd>{formatDate(selectedTrack.soundcloudLikedAt)}</dd>
-                    </div>
-                    <div>
-                      <dt>Enlace SoundCloud</dt>
-                      <dd>
-                        {selectedTrack.soundcloudPermalinkUrl ? (
-                          <a
-                            href={selectedTrack.soundcloudPermalinkUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="link"
-                          >
-                            Abrir en SoundCloud
-                          </a>
-                        ) : (
-                          "Sin enlace"
-                        )}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>Archivo local</dt>
-                      <dd>{selectedTrack.localLocation || "No registrado"}</dd>
-                    </div>
-                  </dl>
-                </article>
-                <article className="detail-card">
-                  <div className="candidate-card__header">
-                    <h3>Candidatos</h3>
-                    <div className="candidate-tabs">
-                      <button
-                        type="button"
-                        className={`candidate-tabs__button ${
-                          activeCandidateSource === "discogs" ? "candidate-tabs__button--active" : ""
-                        }`}
-                        onClick={() => setActiveCandidateSource("discogs")}
-                      >
-                        Discogs ({discogsCandidateTotal})
-                      </button>
-                      <button
-                        type="button"
-                        className={`candidate-tabs__button ${
-                          activeCandidateSource === "musicbrainz" ? "candidate-tabs__button--active" : ""
-                        }`}
-                        onClick={() => setActiveCandidateSource("musicbrainz")}
-                      >
-                        MusicBrainz ({musicbrainzCandidateTotal})
-                      </button>
-                    </div>
-                  </div>
-                  <div className="candidate-panel">
-                    {activeCandidateSource === "discogs"
-                      ? renderDiscogsCandidates()
-                      : renderMusicbrainzCandidates()}
-                  </div>
-                </article>
-                <article className="detail-card">
-                  <h3>Acciones</h3>
-                  <div className="detail-actions">
-                    <button type="button" className="button button--secondary" onClick={handleDownloadTrack}>
-                      Descargar pista
-                    </button>
-                    <button type="button" className="button button--secondary" onClick={handleRetryDiscogs}>
-                      Reintentar Discogs
-                    </button>
-                    <button type="button" className="button button--secondary" onClick={handleRetryMusicbrainz}>
-                      Reintentar MusicBrainz
-                    </button>
-                    <button type="button" className="button button--ghost" onClick={handleIgnoreTrack}>
-                      Ignorar pista en Discogs
-                    </button>
-                  </div>
-                </article>
-              </div>
+          {mode === "filesystem" && (
+            <div className="track-detail__empty">
+              Vista de sistema de archivos (pendiente): muestra carpetas y
+              permite reproducir.
             </div>
-          ) : (
-            <div className="track-detail__empty">Selecciona una pista para ver los detalles.</div>
           )}
+          {mode === "database" &&
+            (selectedTrack ? (
+              <div className="track-detail">
+                <header className="track-detail__header">
+                  <div>
+                    <h2>{selectedTrack.title || "Sin título"}</h2>
+                    <p className="track-detail__subtitle">
+                      {selectedTrack.artist || "Artista desconocido"}
+                    </p>
+                  </div>
+                  <div className="track-detail__badges">
+                    {selectedTrack.liked && (
+                      <Badge label="Like" variant="primary" />
+                    )}
+                    {discogsStatusInfo && (
+                      <Badge
+                        label={discogsStatusInfo.label}
+                        variant={discogsStatusInfo.variant}
+                      />
+                    )}
+                    {musicbrainzStatusInfo && (
+                      <Badge
+                        label={musicbrainzStatusInfo.label}
+                        variant={musicbrainzStatusInfo.variant}
+                      />
+                    )}
+                    {selectedTrack.hasLocalFile && (
+                      <Badge
+                        label={
+                          selectedTrack.localAvailable
+                            ? "Archivo local"
+                            : "Archivo no disponible"
+                        }
+                        variant={
+                          selectedTrack.localAvailable ? "success" : "warning"
+                        }
+                      />
+                    )}
+                    {selectedTrack.inRekordbox && (
+                      <Badge label="Rekordbox" variant="neutral" />
+                    )}
+                    {hasIntegrationConflict && (
+                      <Badge label="Conflicto" variant="warning" />
+                    )}
+                  </div>
+                </header>
+                <div className="track-detail__grid">
+                  <article className="detail-card">
+                    <h3>Información general</h3>
+                    {hasIntegrationConflict && (
+                      <div className="detail-card__alert detail-card__alert--warning">
+                        Se detectó un conflicto entre los lanzamientos
+                        confirmados en Discogs y MusicBrainz. Revisa y alinea
+                        las coincidencias para garantizar metadatos
+                        consistentes.
+                      </div>
+                    )}
+                    <dl className="detail-list">
+                      <div>
+                        <dt>Álbum</dt>
+                        <dd>{selectedTrack.album || "Sin datos"}</dd>
+                      </div>
+                      <div>
+                        <dt>Estado Discogs</dt>
+                        <dd>{describeStatus(selectedTrack.discogsStatus)}</dd>
+                      </div>
+                      <div>
+                        <dt>Lanzamiento Discogs</dt>
+                        <dd>{selectedTrack.discogsReleaseId || "Sin datos"}</dd>
+                      </div>
+                      <div>
+                        <dt>Confianza Discogs</dt>
+                        <dd>{formatScore(selectedTrack.discogsConfidence)}</dd>
+                      </div>
+                      <div>
+                        <dt>Candidatos Discogs</dt>
+                        <dd>{selectedTrack.discogsCandidateCount ?? 0}</dd>
+                      </div>
+                      <div>
+                        <dt>Última comprobación Discogs</dt>
+                        <dd>{formatDate(selectedTrack.discogsCheckedAt)}</dd>
+                      </div>
+                      <div>
+                        <dt>Mensaje Discogs</dt>
+                        <dd>{selectedTrack.discogsMessage || "—"}</dd>
+                      </div>
+                      <div>
+                        <dt>Consulta Discogs</dt>
+                        <dd>{selectedTrack.discogsQuery || "Sin datos"}</dd>
+                      </div>
+                      <div>
+                        <dt>Estado MusicBrainz</dt>
+                        <dd>
+                          {describeStatus(selectedTrack.musicbrainzStatus)}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Lanzamiento MusicBrainz</dt>
+                        <dd>
+                          {selectedTrack.musicbrainzReleaseId || "Sin datos"}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Confianza MusicBrainz</dt>
+                        <dd>
+                          {formatScore(selectedTrack.musicbrainzConfidence)}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Candidatos MusicBrainz</dt>
+                        <dd>{selectedTrack.musicbrainzCandidateCount ?? 0}</dd>
+                      </div>
+                      <div>
+                        <dt>Última comprobación MusicBrainz</dt>
+                        <dd>
+                          {formatDate(selectedTrack.musicbrainzCheckedAt)}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Mensaje MusicBrainz</dt>
+                        <dd>{selectedTrack.musicbrainzMessage || "—"}</dd>
+                      </div>
+                      <div>
+                        <dt>Consulta MusicBrainz</dt>
+                        <dd>{selectedTrack.musicbrainzQuery || "Sin datos"}</dd>
+                      </div>
+                      <div>
+                        <dt>Like en SoundCloud</dt>
+                        <dd>{formatDate(selectedTrack.soundcloudLikedAt)}</dd>
+                      </div>
+                      <div>
+                        <dt>Enlace SoundCloud</dt>
+                        <dd>
+                          {selectedTrack.soundcloudPermalinkUrl ? (
+                            <a
+                              href={selectedTrack.soundcloudPermalinkUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="link">
+                              Abrir en SoundCloud
+                            </a>
+                          ) : (
+                            "Sin enlace"
+                          )}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Archivo local</dt>
+                        <dd>
+                          {selectedTrack.localLocation || "No registrado"}
+                        </dd>
+                      </div>
+                    </dl>
+                  </article>
+                  <article className="detail-card">
+                    <div className="candidate-card__header">
+                      <h3>Candidatos</h3>
+                      <div className="candidate-tabs">
+                        <button
+                          type="button"
+                          className={`candidate-tabs__button ${
+                            activeCandidateSource === "discogs"
+                              ? "candidate-tabs__button--active"
+                              : ""
+                          }`}
+                          onClick={() => setActiveCandidateSource("discogs")}>
+                          Discogs ({discogsCandidateTotal})
+                        </button>
+                        <button
+                          type="button"
+                          className={`candidate-tabs__button ${
+                            activeCandidateSource === "musicbrainz"
+                              ? "candidate-tabs__button--active"
+                              : ""
+                          }`}
+                          onClick={() =>
+                            setActiveCandidateSource("musicbrainz")
+                          }>
+                          MusicBrainz ({musicbrainzCandidateTotal})
+                        </button>
+                      </div>
+                    </div>
+                    <div className="candidate-panel">
+                      {activeCandidateSource === "discogs"
+                        ? renderDiscogsCandidates()
+                        : renderMusicbrainzCandidates()}
+                    </div>
+                  </article>
+                  <article className="detail-card">
+                    <h3>Acciones</h3>
+                    <div className="detail-actions">
+                      <button
+                        type="button"
+                        className="button button--secondary"
+                        onClick={handleDownloadTrack}>
+                        Descargar pista
+                      </button>
+                      <button
+                        type="button"
+                        className="button button--secondary"
+                        onClick={handleRetryDiscogs}>
+                        Reintentar Discogs
+                      </button>
+                      <button
+                        type="button"
+                        className="button button--secondary"
+                        onClick={handleRetryMusicbrainz}>
+                        Reintentar MusicBrainz
+                      </button>
+                      <button
+                        type="button"
+                        className="button button--ghost"
+                        onClick={handleIgnoreTrack}>
+                        Ignorar pista en Discogs
+                      </button>
+                    </div>
+                  </article>
+                </div>
+              </div>
+            ) : (
+              <div className="track-detail__empty">
+                Selecciona una pista para ver los detalles.
+              </div>
+            ))}
         </section>
         <section className="workspace__jobs" aria-live="polite">
           {Object.keys(jobs).length > 0 && (
@@ -1255,19 +1604,31 @@ const App = () => {
                 {Object.values(jobs)
                   .sort((a, b) => b.updatedAt - a.updatedAt)
                   .map((job) => {
-                    const percentage = job.total ? Math.min(100, Math.round((job.completed / job.total) * 100)) : null;
+                    const percentage = job.total
+                      ? Math.min(
+                          100,
+                          Math.round((job.completed / job.total) * 100)
+                        )
+                      : null;
                     return (
-                      <li key={job.id} className={`jobs-list__item jobs-list__item--${job.state}`}>
+                      <li
+                        key={job.id}
+                        className={`jobs-list__item jobs-list__item--${job.state}`}>
                         <div className="jobs-list__header">
                           <span className="jobs-list__label">{job.label}</span>
                           <span className="jobs-list__state">{job.state}</span>
                         </div>
                         {percentage !== null && (
                           <div className="jobs-list__progress">
-                            <div className="jobs-list__progress-bar" style={{ width: `${percentage}%` }} />
+                            <div
+                              className="jobs-list__progress-bar"
+                              style={{ width: `${percentage}%` }}
+                            />
                           </div>
                         )}
-                        {job.message && <p className="jobs-list__message">{job.message}</p>}
+                        {job.message && (
+                          <p className="jobs-list__message">{job.message}</p>
+                        )}
                       </li>
                     );
                   })}
