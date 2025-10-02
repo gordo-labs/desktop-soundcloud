@@ -187,6 +187,11 @@ button {
   color: #e2e8f0;
 }
 
+.badge--danger {
+  background: rgba(248, 113, 113, 0.18);
+  color: #fecaca;
+}
+
 .sidebar__error,
 .sidebar__loading {
   margin-top: 0.75rem;
@@ -358,6 +363,20 @@ button {
   color: rgba(148, 163, 184, 0.9);
 }
 
+.detail-card__alert {
+  margin: 0;
+  padding: 0.75rem 0.9rem;
+  border-radius: 12px;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.detail-card__alert--warning {
+  background: rgba(251, 191, 36, 0.15);
+  color: #fde68a;
+  border: 1px solid rgba(251, 191, 36, 0.35);
+}
+
 .detail-list {
   margin: 0;
   display: grid;
@@ -410,6 +429,46 @@ button {
   text-decoration: underline;
 }
 
+.candidate-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+
+.candidate-tabs {
+  display: inline-flex;
+  border-radius: 999px;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(15, 23, 42, 0.7);
+}
+
+.candidate-tabs__button {
+  border: none;
+  background: transparent;
+  color: rgba(148, 163, 184, 0.85);
+  padding: 0.4rem 0.9rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+.candidate-tabs__button:hover {
+  background: rgba(56, 189, 248, 0.2);
+  color: #e0f2fe;
+}
+
+.candidate-tabs__button--active {
+  background: rgba(56, 189, 248, 0.3);
+  color: #0f172a;
+}
+
+.candidate-panel {
+  margin-top: 0.75rem;
+}
+
 .candidate-list {
   list-style: none;
   margin: 0;
@@ -444,6 +503,18 @@ button {
   margin: 0.35rem 0 0;
   font-size: 0.85rem;
   color: rgba(148, 163, 184, 0.8);
+}
+
+.candidate-list__submeta {
+  margin: 0.2rem 0 0;
+  font-size: 0.8rem;
+  color: rgba(148, 163, 184, 0.7);
+}
+
+.candidate-list__note {
+  margin: 0.35rem 0 0;
+  font-size: 0.8rem;
+  color: rgba(253, 230, 138, 0.9);
 }
 
 .candidate-list__thumb {
