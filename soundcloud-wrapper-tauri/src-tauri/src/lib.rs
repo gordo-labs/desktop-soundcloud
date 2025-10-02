@@ -494,6 +494,9 @@ pub fn run() {
                             album: None,
                             discogs_release_id: None,
                             discogs_confidence: None,
+                            musicbrainz_release_id: None,
+                            musicbrainz_confidence: None,
+                            musicbrainz_payload: None,
                         };
                         let source_record = SoundcloudSourceRecord {
                             track_id: payload.track_id.clone(),
@@ -537,6 +540,9 @@ pub fn run() {
                                 album: None,
                                 discogs_release_id: None,
                                 discogs_confidence: None,
+                                musicbrainz_release_id: None,
+                                musicbrainz_confidence: None,
+                                musicbrainz_payload: None,
                             };
                             let source_record = SoundcloudSourceRecord {
                                 track_id: track.track_id.clone(),

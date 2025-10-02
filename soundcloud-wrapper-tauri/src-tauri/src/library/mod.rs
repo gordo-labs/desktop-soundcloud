@@ -74,6 +74,12 @@ pub struct TrackRecord {
     pub discogs_release_id: Option<String>,
     #[serde(default)]
     pub discogs_confidence: Option<f32>,
+    #[serde(default)]
+    pub musicbrainz_release_id: Option<String>,
+    #[serde(default)]
+    pub musicbrainz_confidence: Option<f32>,
+    #[serde(default)]
+    pub musicbrainz_payload: Option<Value>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -174,6 +180,16 @@ pub struct LibraryStatusRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub discogs_message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub musicbrainz_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub musicbrainz_release_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub musicbrainz_confidence: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub musicbrainz_checked_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub musicbrainz_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub soundcloud_permalink_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub soundcloud_liked_at: Option<String>,
@@ -249,6 +265,9 @@ impl LibraryStore {
                 discogs_payload TEXT,
                 discogs_release_id TEXT,
                 discogs_confidence REAL,
+                musicbrainz_payload TEXT,
+                musicbrainz_release_id TEXT,
+                musicbrainz_confidence REAL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -309,6 +328,30 @@ impl LibraryStore {
             CREATE INDEX IF NOT EXISTS discogs_matches_status_idx ON discogs_matches(status);
             CREATE INDEX IF NOT EXISTS discogs_candidates_match_idx ON discogs_candidates(match_id);
             CREATE INDEX IF NOT EXISTS discogs_candidates_release_idx ON discogs_candidates(release_id);
+
+            CREATE TABLE IF NOT EXISTS musicbrainz_matches (
+                track_id TEXT PRIMARY KEY,
+                release_id TEXT,
+                confidence REAL,
+                status TEXT NOT NULL,
+                query TEXT,
+                message TEXT,
+                checked_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY(track_id) REFERENCES tracks(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS musicbrainz_candidates (
+                match_id TEXT NOT NULL,
+                release_id TEXT,
+                score REAL,
+                raw_payload TEXT NOT NULL,
+                FOREIGN KEY(match_id) REFERENCES musicbrainz_matches(track_id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS musicbrainz_matches_release_idx ON musicbrainz_matches(release_id);
+            CREATE INDEX IF NOT EXISTS musicbrainz_matches_status_idx ON musicbrainz_matches(status);
+            CREATE INDEX IF NOT EXISTS musicbrainz_candidates_match_idx ON musicbrainz_candidates(match_id);
+            CREATE INDEX IF NOT EXISTS musicbrainz_candidates_release_idx ON musicbrainz_candidates(release_id);
             "#,
         )?;
 
@@ -345,21 +388,84 @@ impl LibraryStore {
             }
         }
 
+        if let Err(error) = self.connection.execute(
+            "ALTER TABLE tracks ADD COLUMN musicbrainz_payload TEXT;",
+            [],
+        ) {
+            match error {
+                rusqlite::Error::SqliteFailure(ref failure, _)
+                    if failure.code == ErrorCode::DuplicateColumnName => {}
+                _ => return Err(error.into()),
+            }
+        }
+
+        if let Err(error) = self.connection.execute(
+            "ALTER TABLE tracks ADD COLUMN musicbrainz_release_id TEXT;",
+            [],
+        ) {
+            match error {
+                rusqlite::Error::SqliteFailure(ref failure, _)
+                    if failure.code == ErrorCode::DuplicateColumnName => {}
+                _ => return Err(error.into()),
+            }
+        }
+
+        if let Err(error) = self.connection.execute(
+            "ALTER TABLE tracks ADD COLUMN musicbrainz_confidence REAL;",
+            [],
+        ) {
+            match error {
+                rusqlite::Error::SqliteFailure(ref failure, _)
+                    if failure.code == ErrorCode::DuplicateColumnName => {}
+                _ => return Err(error.into()),
+            }
+        }
+
         self.migrate_discogs_payloads()?;
+        self.migrate_musicbrainz_payloads()?;
         Ok(())
     }
 
     pub fn upsert_track(&self, record: &TrackRecord) -> Result<(), LibraryError> {
+        let musicbrainz_payload = record
+            .musicbrainz_payload
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+
         self.connection.execute(
             r#"
-            INSERT INTO tracks (id, title, artist, album, discogs_release_id, discogs_confidence)
-            VALUES (:id, :title, :artist, :album, :discogs_release_id, :discogs_confidence)
+            INSERT INTO tracks (
+                id,
+                title,
+                artist,
+                album,
+                discogs_release_id,
+                discogs_confidence,
+                musicbrainz_release_id,
+                musicbrainz_confidence,
+                musicbrainz_payload
+            )
+            VALUES (
+                :id,
+                :title,
+                :artist,
+                :album,
+                :discogs_release_id,
+                :discogs_confidence,
+                :musicbrainz_release_id,
+                :musicbrainz_confidence,
+                :musicbrainz_payload
+            )
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 artist = excluded.artist,
                 album = excluded.album,
                 discogs_release_id = excluded.discogs_release_id,
                 discogs_confidence = excluded.discogs_confidence,
+                musicbrainz_release_id = excluded.musicbrainz_release_id,
+                musicbrainz_confidence = excluded.musicbrainz_confidence,
+                musicbrainz_payload = excluded.musicbrainz_payload,
                 updated_at = datetime('now');
             "#,
             rusqlite::named_params! {
@@ -369,6 +475,9 @@ impl LibraryStore {
                 ":album": record.album,
                 ":discogs_release_id": record.discogs_release_id,
                 ":discogs_confidence": record.discogs_confidence.map(|value| value as f64),
+                ":musicbrainz_release_id": record.musicbrainz_release_id,
+                ":musicbrainz_confidence": record.musicbrainz_confidence.map(|value| value as f64),
+                ":musicbrainz_payload": musicbrainz_payload,
             },
         )?;
 
@@ -846,6 +955,7 @@ impl LibraryStore {
             FROM tracks t
             LEFT JOIN soundcloud_sources ss ON ss.track_id = t.id
             LEFT JOIN discogs_matches dm ON dm.track_id = t.id
+            LEFT JOIN musicbrainz_matches mb ON mb.track_id = t.id
             LEFT JOIN local_assets la ON la.track_id = t.id
             LEFT JOIN rekordbox_sources rb ON rb.track_id = t.id
         "#;
@@ -871,6 +981,11 @@ impl LibraryStore {
                 dm.confidence,
                 dm.checked_at,
                 dm.message,
+                mb.status,
+                mb.release_id,
+                mb.confidence,
+                mb.checked_at,
+                mb.message,
                 ss.permalink_url,
                 json_extract(ss.raw_payload, '$.likedAt') AS liked_at,
                 la.location
@@ -890,6 +1005,7 @@ impl LibraryStore {
         let mut result_rows = Vec::new();
         while let Some(row) = rows.next()? {
             let confidence: Option<f64> = row.get(11)?;
+            let musicbrainz_confidence: Option<f64> = row.get(16)?;
 
             result_rows.push(LibraryStatusRow {
                 track_id: row.get(0)?,
@@ -906,9 +1022,14 @@ impl LibraryStore {
                 discogs_confidence: confidence.map(|value| value as f32),
                 discogs_checked_at: row.get(12)?,
                 discogs_message: row.get(13)?,
-                soundcloud_permalink_url: row.get(14)?,
-                soundcloud_liked_at: row.get(15)?,
-                local_location: row.get(16)?,
+                musicbrainz_status: row.get(14)?,
+                musicbrainz_release_id: row.get(15)?,
+                musicbrainz_confidence: musicbrainz_confidence.map(|value| value as f32),
+                musicbrainz_checked_at: row.get(17)?,
+                musicbrainz_message: row.get(18)?,
+                soundcloud_permalink_url: row.get(19)?,
+                soundcloud_liked_at: row.get(20)?,
+                local_location: row.get(21)?,
             });
         }
 
@@ -1014,6 +1135,163 @@ impl LibraryStore {
                     "UPDATE tracks SET discogs_payload = NULL WHERE id = :track_id;",
                     rusqlite::named_params! { ":track_id": &track_id },
                 )?;
+            }
+        }
+
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn migrate_musicbrainz_payloads(&self) -> Result<(), LibraryError> {
+        let mut transaction = self.connection.transaction()?;
+
+        {
+            let mut statement = transaction.prepare(
+                "SELECT id, musicbrainz_payload FROM tracks WHERE musicbrainz_payload IS NOT NULL;",
+            )?;
+            let mut rows = statement.query([])?;
+
+            while let Some(row) = rows.next()? {
+                let track_id: String = row.get(0)?;
+                let payload_json: String = row.get(1)?;
+                let payload: Value = serde_json::from_str(&payload_json)?;
+
+                let status = payload
+                    .get("status")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("error")
+                    .to_string();
+                let query = payload
+                    .get("query")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.to_string());
+                let message = payload
+                    .get("reason")
+                    .or_else(|| payload.get("message"))
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.to_string());
+
+                let mut release_id = payload
+                    .get("release_id")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.to_string());
+                let mut confidence = payload
+                    .get("confidence")
+                    .and_then(|value| value.as_f64())
+                    .map(|value| value as f32);
+                let mut candidate_payloads: Vec<(Option<String>, Option<f64>, Value)> = Vec::new();
+
+                match status.as_str() {
+                    "success" => {
+                        if let Some(release) = payload
+                            .get("release")
+                            .or_else(|| payload.get("recording"))
+                            .or_else(|| payload.get("match"))
+                        {
+                            if let Some(score_value) =
+                                release.get("score").and_then(|value| value.as_f64())
+                            {
+                                confidence = Some(score_value as f32);
+                            }
+
+                            let extracted_id = extract_release_id(release);
+                            if release_id.is_none() {
+                                release_id = extracted_id.clone();
+                            }
+
+                            let candidate_score = release
+                                .get("score")
+                                .and_then(|value| value.as_f64())
+                                .or_else(|| confidence.as_ref().map(|value| f64::from(*value)));
+                            candidate_payloads.push((
+                                extracted_id,
+                                candidate_score,
+                                release.clone(),
+                            ));
+                        }
+                    }
+                    "ambiguous" => {
+                        confidence = None;
+                        if let Some(candidates) =
+                            payload.get("candidates").and_then(|value| value.as_array())
+                        {
+                            for candidate in candidates {
+                                let candidate_id = extract_release_id(candidate);
+                                let candidate_score =
+                                    candidate.get("score").and_then(|value| value.as_f64());
+                                candidate_payloads.push((
+                                    candidate_id,
+                                    candidate_score,
+                                    candidate.clone(),
+                                ));
+                            }
+                        }
+                    }
+                    _ => {
+                        confidence = None;
+                    }
+                }
+
+                let confidence_value = confidence.map(|value| value as f64);
+
+                transaction.execute(
+                    r#"
+                    INSERT INTO musicbrainz_matches (track_id, release_id, confidence, status, query, message, checked_at)
+                    VALUES (:track_id, :release_id, :confidence, :status, :query, :message, datetime('now'))
+                    ON CONFLICT(track_id) DO UPDATE SET
+                        release_id = excluded.release_id,
+                        confidence = excluded.confidence,
+                        status = excluded.status,
+                        query = excluded.query,
+                        message = excluded.message,
+                        checked_at = excluded.checked_at;
+                    "#,
+                    rusqlite::named_params! {
+                        ":track_id": &track_id,
+                        ":release_id": release_id.as_ref(),
+                        ":confidence": confidence_value,
+                        ":status": &status,
+                        ":query": query.as_ref(),
+                        ":message": message.as_ref(),
+                    },
+                )?;
+
+                transaction.execute(
+                    r#"
+                    UPDATE tracks
+                    SET musicbrainz_release_id = :release_id,
+                        musicbrainz_confidence = :confidence,
+                        musicbrainz_payload = NULL,
+                        updated_at = datetime('now')
+                    WHERE id = :track_id;
+                    "#,
+                    rusqlite::named_params! {
+                        ":track_id": &track_id,
+                        ":release_id": release_id.as_ref(),
+                        ":confidence": confidence_value,
+                    },
+                )?;
+
+                transaction.execute(
+                    "DELETE FROM musicbrainz_candidates WHERE match_id = :match_id;",
+                    rusqlite::named_params! { ":match_id": &track_id },
+                )?;
+
+                for (candidate_id, candidate_score, candidate_payload) in candidate_payloads {
+                    let raw_payload = serde_json::to_string(&candidate_payload)?;
+                    transaction.execute(
+                        r#"
+                        INSERT INTO musicbrainz_candidates (match_id, release_id, score, raw_payload)
+                        VALUES (:match_id, :release_id, :score, :raw_payload);
+                        "#,
+                        rusqlite::named_params! {
+                            ":match_id": &track_id,
+                            ":release_id": candidate_id.as_ref(),
+                            ":score": candidate_score,
+                            ":raw_payload": raw_payload,
+                        },
+                    )?;
+                }
             }
         }
 
