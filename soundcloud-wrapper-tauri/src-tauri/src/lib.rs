@@ -11,7 +11,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use discogs::DiscogsService;
-use library::{LibraryStore, LocalAssetRecord, SoundcloudSourceRecord, TrackRecord};
+use library::{
+    LibraryStatusPage, LibraryStore, LocalAssetRecord, SoundcloudSourceRecord, StatusFilter,
+    TrackRecord,
+};
 use media::{MediaCache, MediaIntegration, MediaUpdate, MediaUpdatePayload, ThemeChangePayload};
 use rekordbox::{load_tracks, supports_auto_refresh};
 use serde::Deserialize;
@@ -310,6 +313,21 @@ fn list_missing_assets(state: tauri::State<AppState>) -> Result<Vec<String>, Str
 }
 
 #[tauri::command]
+fn list_library_status(
+    state: tauri::State<AppState>,
+    filter: Option<StatusFilter>,
+) -> Result<LibraryStatusPage, String> {
+    let filter = filter.unwrap_or_default();
+    let store = state
+        .library
+        .lock()
+        .map_err(|_| "library store lock poisoned".to_string())?;
+    store
+        .list_library_status(&filter)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn import_rekordbox_library(
     state: tauri::State<'_, AppState>,
     db_path: String,
@@ -423,6 +441,7 @@ pub fn run() {
             link_soundcloud_source,
             record_local_asset,
             list_missing_assets,
+            list_library_status,
             import_rekordbox_library
         ])
         .setup(|app| {
